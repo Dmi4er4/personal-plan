@@ -1,0 +1,40 @@
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+.wrangler/
+.expo/
+.expo-shared/
+web-build/
+apps/android/android/
+apps/android/ios/
+apps/android/modules/*/android/build/
+
+# Local state and secrets
+.env
+.env.*
+!.env.example
+.local/
+*.sqlite
+*.sqlite-*
+*.db
+*.log
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+
+# Local release packages and private working notes
+artifacts/
+docs/handoff/
+docs/superpowers/
+.superpowers/
+
+# Editors and operating systems
+.DS_Store
+**/.DS_Store
+.idea/
+.vscode/

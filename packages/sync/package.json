@@ -1,0 +1,27 @@
+{
+  "name": "@personal-plan/sync",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@scure/bip39": "^2.0.1",
+    "yjs": "^13.6.31"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

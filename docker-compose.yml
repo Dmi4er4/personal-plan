@@ -1,0 +1,36 @@
+services:
+  relay:
+    build: .
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    expose:
+      - "8787"
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - relay-state:/state
+      - ./apps/web/dist:/app/apps/web/dist:ro
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PERSONAL_PLAN_HOST: ${PERSONAL_PLAN_HOST:-localhost}
+    depends_on:
+      - relay
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  relay-state:
+  caddy-data:
+  caddy-config:

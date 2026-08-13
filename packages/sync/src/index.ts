@@ -1,0 +1,12 @@
+export { base64UrlDecode, base64UrlEncode, equalBytes, utf8 } from "./bytes.js";
+export type { AesGcmCiphertext, CryptoProvider, VaultMaterial } from "./crypto-provider.js";
+export { WebCryptoProvider } from "./web-crypto-provider.js";
+export { deriveVaultMaterial, generateRootSecret } from "./keys.js";
+export { decryptEnvelope, encryptPayload, EnvelopeAuthenticationError } from "./envelope.js";
+export type { EncryptedEnvelope, EncryptPayloadInput, EnvelopeKind } from "./envelope.js";
+export { createPairingQr, parsePairingQr, phraseToRootSecret, rootSecretToPhrase } from "./pairing.js";
+export type { PairingPayloadV1 } from "./pairing.js";
+export type { AppendUpdatesRequest, AppendUpdatesResponse, BootstrapResponse, CreateVaultRequest, ListUpdatesResponse, PutSnapshotRequest, StoredEnvelope } from "./protocol.js";
+export type { OutboxEntry, SyncStateStore } from "./state-store.js";
+export { SyncClient, SyncIntegrityError } from "./sync-client.js";
+export type { RelayTransport, SyncClientApi, SyncClientOptions, SyncResult } from "./sync-client.js";

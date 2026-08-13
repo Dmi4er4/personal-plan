@@ -1,0 +1,10 @@
+{
+	https_port 8443
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$PERSONAL_PLAN_HOST:localhost} {
+	reverse_proxy 127.0.0.1:8787
+}

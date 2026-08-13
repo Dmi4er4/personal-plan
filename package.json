@@ -1,0 +1,42 @@
+{
+  "name": "personal-plan",
+  "version": "1.0.0",
+  "description": "Offline-first, end-to-end encrypted personal planner for web, Android, and macOS",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dmi4er4/personal-plan.git"
+  },
+  "pnpm": {
+    "overrides": {
+      "uuid@<11.1.1": "11.1.1"
+    }
+  },
+  "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "build": "pnpm build:deps && pnpm build:web && pnpm --dir apps/relay build",
+    "build:deps": "pnpm --filter @personal-plan/core build && pnpm --filter @personal-plan/sync build",
+    "build:web": "pnpm --dir apps/web build",
+    "dev:relay": "pnpm --dir apps/relay dev",
+    "dev:web": "pnpm --dir apps/web dev",
+    "android": "pnpm --dir apps/android android",
+    "qualify:android": "bash scripts/qualify-android.sh",
+    "pretest": "pnpm build:deps",
+    "test": "pnpm -r test",
+    "test:sync-e2e": "pnpm build:web && pnpm --dir apps/web playwright test encrypted-sync.spec.ts",
+    "pretypecheck": "pnpm build:deps",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.0",
+    "globals": "^17.9.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.66.0"
+  }
+}
