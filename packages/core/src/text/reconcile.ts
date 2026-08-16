@@ -84,6 +84,7 @@ export interface ApplyReconcileOptions {
   now: string;
   completedOn: LocalDate;
   idFactory: () => string;
+  autoMoveCompletedToEnd?: boolean;
   confirmDiagnostics?: boolean;
   confirmRisky?: boolean;
 }
@@ -1536,6 +1537,7 @@ function replayReconcileChanges(
           completed: true,
           at: options.now,
           on: options.completedOn,
+          autoMoveToEnd: options.autoMoveCompletedToEnd ?? true,
         });
       }
     }
@@ -1554,6 +1556,7 @@ function replayReconcileChanges(
           completed: change.task.completed,
           at: options.now,
           on: options.completedOn,
+          autoMoveToEnd: options.autoMoveCompletedToEnd ?? true,
         });
       }
     }
@@ -1758,6 +1761,7 @@ export function applyReconcilePreview(
     moves,
   };
   const replayOptions = {
+    autoMoveCompletedToEnd: options.autoMoveCompletedToEnd ?? true,
     completedOn: options.completedOn,
     now: options.now,
   };

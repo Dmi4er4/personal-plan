@@ -16,10 +16,10 @@ export function needsRemoteBootstrap(doc: Y.Doc): boolean {
 let dependencies: AndroidSyncDependencies | null = null;
 let inFlight: Promise<AndroidSyncResult> | null = null;
 export function configureAndroidSync(value: AndroidSyncDependencies | null): void { dependencies = value; }
+export function isAndroidSyncConfigured(): boolean { return dependencies !== null; }
 
-async function execute(reason: AndroidSyncReason): Promise<AndroidSyncResult> {
-  if (dependencies === null) throw new Error("android_sync_not_configured");
-  const { doc, planStore, syncClient, bridge } = dependencies; const today = dependencies.today();
+export async function runAndroidSyncWithDependencies(reason: AndroidSyncReason, value: AndroidSyncDependencies): Promise<AndroidSyncResult> {
+  const { doc, planStore, syncClient, bridge } = value; const today = value.today();
   // Widget commands and offline app edits must be captured before any local
   // mutation happens. syncOnce waits for the client's capture queue, so a
   // command drained below is uploaded by this same run instead of being
@@ -27,7 +27,7 @@ async function execute(reason: AndroidSyncReason): Promise<AndroidSyncResult> {
   syncClient.start(doc);
   const commandsProcessed = await processWidgetCommands(doc, bridge, today, "pending");
   let uploaded = 0; let downloaded = 0; let widgetStatus: WidgetSnapshot["syncState"] = "offline"; let error: string | null = null;
-  if (await dependencies.isOnline()) {
+  if (await value.isOnline()) {
     try {
       let result;
       if (needsRemoteBootstrap(doc)) {
@@ -54,6 +54,7 @@ async function execute(reason: AndroidSyncReason): Promise<AndroidSyncResult> {
 
 export function runAndroidSync(reason: AndroidSyncReason): Promise<AndroidSyncResult> {
   if (inFlight !== null) return inFlight;
-  inFlight = execute(reason).finally(() => { inFlight = null; });
+  if (dependencies === null) return Promise.reject(new Error("android_sync_not_configured"));
+  inFlight = runAndroidSyncWithDependencies(reason, dependencies).finally(() => { inFlight = null; });
   return inFlight;
 }

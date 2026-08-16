@@ -155,6 +155,7 @@ export function TextPlan() {
       preview: ReconcilePreviewModel,
       value: string,
       version: number,
+      autoMoveCompletedToEnd = true,
     ): void => {
       if (!mounted.current || editVersion.current !== version) {
         return;
@@ -162,6 +163,7 @@ export function TextPlan() {
       setState({ kind: "applying", value });
       try {
         applyReconcilePreview(doc, preview, {
+          autoMoveCompletedToEnd,
           completedOn: today,
           confirmDiagnostics: true,
           confirmRisky: true,
@@ -272,7 +274,7 @@ export function TextPlan() {
   };
 
   const importLegacy = (preview: ReconcilePreviewModel): void => {
-    applyPreview(preview, preview.source, editVersion.current);
+    applyPreview(preview, preview.source, editVersion.current, false);
   };
 
   return (

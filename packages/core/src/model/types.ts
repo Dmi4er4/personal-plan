@@ -63,6 +63,7 @@ export interface CompletionChange {
   completed: boolean;
   at: string;
   on: LocalDate;
+  autoMoveToEnd?: boolean;
 }
 
 export function bucketKey(bucket: Bucket): string {

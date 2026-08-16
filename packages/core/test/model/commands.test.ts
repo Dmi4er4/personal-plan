@@ -147,6 +147,142 @@ describe("task commands", () => {
     });
   });
 
+  it("moves newly completed tasks to the end once and preserves manual moves", () => {
+    const doc = createPlanDoc();
+    for (const [id, order] of [
+      ["first", 0],
+      ["second", 1],
+      ["third", 2],
+      ["fourth", 3],
+    ] as const) {
+      addTask(doc, {
+        id,
+        title: id,
+        note: null,
+        bucket: monday,
+        parentId: null,
+        order,
+        now: "2026-08-03T08:00:00.000Z",
+      });
+    }
+
+    setTaskCompleted(doc, "second", {
+      completed: true,
+      at: "2026-08-03T09:00:00.000Z",
+      on: "2026-08-03",
+    });
+    expect(snapshotPlan(doc).tasks.map(({ id }) => id)).toEqual([
+      "first",
+      "third",
+      "fourth",
+      "second",
+    ]);
+
+    setTaskCompleted(doc, "fourth", {
+      completed: true,
+      at: "2026-08-03T09:01:00.000Z",
+      on: "2026-08-03",
+    });
+    expect(snapshotPlan(doc).tasks.map(({ id }) => id)).toEqual([
+      "first",
+      "third",
+      "second",
+      "fourth",
+    ]);
+
+    moveTask(doc, "second", {
+      bucket: monday,
+      parentId: null,
+      index: 0,
+      now: "2026-08-03T09:02:00.000Z",
+    });
+    setTaskCompleted(doc, "second", {
+      completed: true,
+      at: "2026-08-03T09:03:00.000Z",
+      on: "2026-08-03",
+    });
+    expect(snapshotPlan(doc).tasks.map(({ id }) => id)).toEqual([
+      "second",
+      "first",
+      "third",
+      "fourth",
+    ]);
+  });
+
+  it("moves an overdue task to the end of today when completed", () => {
+    const doc = createPlanDoc();
+    addTask(doc, {
+      id: "overdue",
+      title: "Overdue",
+      note: null,
+      bucket: monday,
+      parentId: null,
+      order: 0,
+      now: "2026-08-03T08:00:00.000Z",
+    });
+    addTask(doc, {
+      id: "today",
+      title: "Today",
+      note: null,
+      bucket: tuesday,
+      parentId: null,
+      order: 0,
+      now: "2026-08-04T08:00:00.000Z",
+    });
+
+    setTaskCompleted(doc, "overdue", {
+      completed: true,
+      at: "2026-08-04T09:00:00.000Z",
+      on: "2026-08-04",
+    });
+
+    expect(snapshotPlan(doc).tasks).toMatchObject([
+      { id: "today", bucket: tuesday, order: 0, completedAt: null },
+      { id: "overdue", bucket: tuesday, order: 1, completedOn: "2026-08-04" },
+    ]);
+  });
+
+  it("moves a completed child to the end of its sibling list", () => {
+    const doc = createPlanDoc();
+    addTask(doc, {
+      id: "parent",
+      title: "Parent",
+      note: null,
+      bucket: monday,
+      parentId: null,
+      order: 0,
+      now: "2026-08-03T08:00:00.000Z",
+    });
+    for (const [id, order] of [
+      ["child-a", 0],
+      ["child-b", 1],
+      ["child-c", 2],
+    ] as const) {
+      addTask(doc, {
+        id,
+        title: id,
+        note: null,
+        bucket: monday,
+        parentId: "parent",
+        order,
+        now: "2026-08-03T08:01:00.000Z",
+      });
+    }
+
+    setTaskCompleted(doc, "child-b", {
+      completed: true,
+      at: "2026-08-03T09:00:00.000Z",
+      on: "2026-08-03",
+    });
+
+    expect(snapshotPlan(doc).tasks.map(({ id }) => id)).toEqual([
+      "parent",
+      "child-a",
+      "child-c",
+      "child-b",
+    ]);
+  });
+
   it("creates a parent and child and completes only the child", () => {
     const doc = createPlanDoc();
     addTask(doc, {

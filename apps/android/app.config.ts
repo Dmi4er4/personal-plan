@@ -3,14 +3,14 @@ import type { ExpoConfig } from "expo/config";
 const config: ExpoConfig = {
   name: "Планы",
   slug: "personal-plan",
-  version: "1.0.6",
+  version: "1.0.8",
   orientation: "portrait",
   scheme: "personalplan",
   userInterfaceStyle: "automatic",
   icon: "./assets/icon.png",
   android: {
     package: "com.personalplan.app",
-    versionCode: 7,
+    versionCode: 9,
     adaptiveIcon: { foregroundImage: "./assets/adaptive-icon.png", backgroundColor: "#ffffff" },
     intentFilters: [
       {

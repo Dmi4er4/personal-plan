@@ -20,7 +20,7 @@ import {
 
 const APPLIED_WIDGET_COMMANDS = "appliedWidgetCommands";
 
-function safeTaskForCompletion(doc: Y.Doc, id: string) {
+function safeTaskSnapshot(doc: Y.Doc, id: string) {
   const task = snapshotPlan(doc).records.find((candidate) => candidate.id === id);
   if (task === undefined) {
     throw new PlanInvariantError("task_not_found");
@@ -40,7 +40,8 @@ export function applyWidgetCompletionCommand(
       return;
     }
     const map = requireTaskMap(doc, command.taskId);
-    const task = safeTaskForCompletion(doc, command.taskId);
+    const task = safeTaskSnapshot(doc, command.taskId);
+    const moveToCompletionTail = command.completed && task.completedAt === null;
     map.set("completedAt", command.completed ? command.completedAt : null);
     map.set("completedOn", command.completed ? command.completedOn : null);
     map.set("prunedOn", null);
@@ -51,6 +52,9 @@ export function applyWidgetCompletionCommand(
       );
     }
     map.set("updatedAt", command.completedAt);
+    if (moveToCompletionTail) {
+      moveCompletedTaskToTail(doc, task, command.completedAt, command.completedOn);
+    }
     applied.set(command.id, command.completedAt);
   }, "widget-command");
   return result;
@@ -86,15 +90,14 @@ function requireText(map: Y.Map<unknown>, key: "title" | "note"): Y.Text {
 }
 
 function siblingMaps(
-  tasks: Y.Map<Y.Map<unknown>>,
+  doc: Y.Doc,
   bucket: Bucket,
   parentId: string | null,
   excludedId: string,
 ): Y.Map<unknown>[] {
   const expectedBucket = bucketKey(bucket);
-  return Array.from(tasks.values())
-    .filter((map) => {
-      const task = snapshotTask(map);
+  return snapshotPlan(doc).records
+    .filter((task) => {
       return (
         !task.deleted &&
         !(task.prunedOn !== null && task.completedAt !== null) &&
@@ -104,13 +107,12 @@ function siblingMaps(
       );
     })
     .sort((left, right) => {
-      const leftTask = snapshotTask(left);
-      const rightTask = snapshotTask(right);
-      const orderDifference = leftTask.order - rightTask.order;
+      const orderDifference = left.order - right.order;
       return orderDifference === 0
-        ? leftTask.id.localeCompare(rightTask.id)
+        ? left.id.localeCompare(right.id)
         : orderDifference;
-    });
+    })
+    .map(({ id }) => requireTaskMap(doc, id));
 }
 
 function insertAt(
@@ -191,7 +193,11 @@ export function editTask(doc: Y.Doc, id: string, patch: EditTaskPatch): void {
 export function setTaskCompleted(doc: Y.Doc, id: string, state: CompletionChange): void {
   doc.transact(() => {
     const map = requireTaskMap(doc, id);
-    const task = safeTaskForCompletion(doc, id);
+    const task = safeTaskSnapshot(doc, id);
+    const moveToCompletionTail =
+      state.completed &&
+      task.completedAt === null &&
+      state.autoMoveToEnd !== false;
     map.set("completedAt", state.completed ? state.at : null);
     map.set("completedOn", state.completed ? state.on : null);
     map.set("prunedOn", null);
@@ -203,6 +209,25 @@ export function setTaskCompleted(doc: Y.Doc, id: string, state: CompletionChange
       }
     }
     map.set("updatedAt", state.at);
+    if (moveToCompletionTail) {
+      moveCompletedTaskToTail(doc, task, state.at, state.on);
+    }
+  });
+}
+
+function moveCompletedTaskToTail(
+  doc: Y.Doc,
+  task: ReturnType<typeof safeTaskSnapshot>,
+  now: string,
+  completedOn: LocalDate,
+): void {
+  moveTask(doc, task.id, {
+    bucket: task.parentId === null
+      ? { kind: "date", date: completedOn }
+      : task.bucket,
+    parentId: task.parentId,
+    index: Number.MAX_SAFE_INTEGER,
+    now,
   });
 }
 
@@ -212,7 +237,7 @@ function validateMove(
   destination: MoveDestination,
 ): void {
   if (destination.parentId !== null) {
-    const destinationParent = snapshotTask(requireTaskMap(doc, destination.parentId));
+    const destinationParent = safeTaskSnapshot(doc, destination.parentId);
     if (destinationParent.parentId !== null) {
       throw new PlanInvariantError("nested_subtask");
     }
@@ -228,25 +253,25 @@ export function moveTask(doc: Y.Doc, id: string, destination: MoveDestination): 
   doc.transact(() => {
     const tasks = doc.getMap<Y.Map<unknown>>("tasks");
     const map = requireTaskMap(doc, id);
-    const task = snapshotTask(map);
+    const task = safeTaskSnapshot(doc, id);
     validateMove(doc, task.parentId, destination);
 
     if (
       task.parentId !== null &&
       bucketKey(task.bucket) !== bucketKey(destination.bucket)
     ) {
-      const parent = snapshotTask(requireTaskMap(doc, task.parentId));
+      const parent = safeTaskSnapshot(doc, task.parentId);
       if (bucketKey(parent.bucket) !== bucketKey(destination.bucket)) {
         throw new PlanInvariantError("subtask_bucket_change");
       }
     }
 
-    const oldSiblings = siblingMaps(tasks, task.bucket, task.parentId, id);
+    const oldSiblings = siblingMaps(doc, task.bucket, task.parentId, id);
     const destinationSiblings =
       bucketKey(task.bucket) === bucketKey(destination.bucket) &&
       task.parentId === destination.parentId
         ? oldSiblings
-        : siblingMaps(tasks, destination.bucket, destination.parentId, id);
+        : siblingMaps(doc, destination.bucket, destination.parentId, id);
     const orderedDestination = insertAt(destinationSiblings, map, destination.index);
 
     map.set("bucket", bucketKey(destination.bucket));
@@ -258,9 +283,9 @@ export function moveTask(doc: Y.Doc, id: string, destination: MoveDestination): 
     normalizeOrders(tasks, destination.bucket, destination.parentId);
 
     if (task.parentId === null && bucketKey(task.bucket) !== bucketKey(destination.bucket)) {
-      for (const childMap of tasks.values()) {
-        const child = snapshotTask(childMap);
+      for (const child of snapshotPlan(doc).records) {
         if (child.parentId === id) {
+          const childMap = requireTaskMap(doc, child.id);
           childMap.set("bucket", bucketKey(destination.bucket));
           childMap.set("updatedAt", destination.now);
         }
@@ -366,9 +391,9 @@ export function reparentTask(
       throw new PlanInvariantError("reparent_task_has_children");
     }
 
-    const oldSiblings = siblingMaps(tasks, task.bucket, task.parentId, id);
+    const oldSiblings = siblingMaps(doc, task.bucket, task.parentId, id);
     const destinationSiblings = siblingMaps(
-      tasks,
+      doc,
       parent.bucket,
       destination.parentId,
       id,
@@ -405,8 +430,8 @@ export function promoteSubtask(
       throw new PlanInvariantError("promotion_requires_top_level_destination");
     }
 
-    const oldSiblings = siblingMaps(tasks, task.bucket, task.parentId, id);
-    const destinationSiblings = siblingMaps(tasks, destination.bucket, null, id);
+    const oldSiblings = siblingMaps(doc, task.bucket, task.parentId, id);
+    const destinationSiblings = siblingMaps(doc, destination.bucket, null, id);
     const orderedDestination = insertAt(destinationSiblings, map, destination.index);
 
     map.set("bucket", bucketKey(destination.bucket));

@@ -30,5 +30,6 @@ class ToggleTaskAction : ActionCallback {
     storage.enqueueCommand(id, command.toString())
     storage.toggleSnapshot(taskId, completed)
     refreshPlanWidgets(context, storage.readSnapshot())
+    enqueueWidgetSync(context)
   }
 }

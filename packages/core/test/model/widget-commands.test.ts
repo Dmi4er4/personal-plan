@@ -1,4 +1,4 @@
-import { addTask, applyWidgetCompletionCommand, createPlanDoc, snapshotPlan } from "../../src/index.js";
+import { addTask, applyWidgetCompletionCommand, createPlanDoc, moveTask, snapshotPlan } from "../../src/index.js";
 import { describe, expect, it, vi } from "vitest";
 
 const NOW = "2026-08-04T10:00:00.000Z";
@@ -32,5 +32,40 @@ describe("widget completion commands", () => {
       completedOn: "2026-08-04",
     })).not.toThrow();
     expect(snapshotPlan(doc).records[0]).toMatchObject({ completedAt: NOW, completedOn: "2026-08-04" });
+  });
+
+  it("moves a task only on its first widget completion transition", () => {
+    const doc = createPlanDoc();
+    for (const [id, order] of [
+      ["first", 0],
+      ["target", 1],
+      ["last", 2],
+    ] as const) {
+      addTask(doc, { id, title: id, note: null, bucket: { kind: "date", date: "2026-08-04" }, parentId: null, order, now: NOW });
+    }
+
+    expect(applyWidgetCompletionCommand(doc, {
+      id: "123e4567-e89b-42d3-a456-426614174010",
+      taskId: "target",
+      completed: true,
+      completedAt: NOW,
+      completedOn: "2026-08-04",
+    })).toBe("applied");
+    expect(snapshotPlan(doc).tasks.map(({ id }) => id)).toEqual(["first", "last", "target"]);
+
+    moveTask(doc, "target", {
+      bucket: { kind: "date", date: "2026-08-04" },
+      parentId: null,
+      index: 0,
+      now: "2026-08-04T10:01:00.000Z",
+    });
+    expect(applyWidgetCompletionCommand(doc, {
+      id: "123e4567-e89b-42d3-a456-426614174011",
+      taskId: "target",
+      completed: true,
+      completedAt: "2026-08-04T10:02:00.000Z",
+      completedOn: "2026-08-04",
+    })).toBe("applied");
+    expect(snapshotPlan(doc).tasks.map(({ id }) => id)).toEqual(["target", "first", "last"]);
   });
 });
