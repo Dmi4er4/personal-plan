@@ -3,7 +3,7 @@ import type {
   DraggableAttributes,
   DraggableSyntheticListeners,
 } from "@dnd-kit/core";
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties, type KeyboardEvent, type SyntheticEvent } from "react";
 
 type ProjectedTask = ProjectedSection["tasks"][number];
 
@@ -16,6 +16,7 @@ export interface TaskRowProps {
   };
   onCancelDelete?: () => void;
   onDelete?: () => void;
+  onEdit: (task: ProjectedTask, values: { note: string | null; title: string }) => void;
   onToggle: (task: ProjectedTask) => void;
   pendingDelete?: boolean;
   deleteProgress?: number;
@@ -29,6 +30,7 @@ export function TaskRow({
   dragHandle,
   onCancelDelete,
   onDelete,
+  onEdit,
   onToggle,
   pendingDelete = false,
   deleteProgress = 0,
@@ -37,6 +39,39 @@ export function TaskRow({
   task,
 }: TaskRowProps) {
   const ownCompleted = task.completedAt !== null;
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(task.title);
+  const [note, setNote] = useState(task.note ?? "");
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  const startEditing = (): void => {
+    setTitle(task.title);
+    setNote(task.note ?? "");
+    setValidationError(null);
+    setEditing(true);
+  };
+
+  const cancelEditing = (): void => {
+    setValidationError(null);
+    setEditing(false);
+  };
+
+  const save = (event: SyntheticEvent<HTMLFormElement, SubmitEvent>): void => {
+    event.preventDefault();
+    if (title.trim().length === 0) {
+      setValidationError("Введите название дела");
+      return;
+    }
+    onEdit(task, { title, note: note.length === 0 ? null : note });
+    setEditing(false);
+  };
+
+  const cancelOnEscape = (event: KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancelEditing();
+    }
+  };
 
   return (
     <div
@@ -57,10 +92,49 @@ export function TaskRow({
         role="checkbox"
         type="button"
       />
-      <div
+      {editing ? (
+        <form className="task-editor" onSubmit={save}>
+          <input
+            aria-describedby={validationError === null ? undefined : `task-edit-error-${task.id}`}
+            aria-label="Название дела"
+            autoFocus
+            className="task-edit-input"
+            onChange={(event) => {
+              setTitle(event.target.value);
+              setValidationError(null);
+            }}
+            onKeyDown={cancelOnEscape}
+            value={title}
+          />
+          <input
+            aria-label="Пояснение дела"
+            className="task-edit-input task-edit-note"
+            onChange={(event) => {
+              setNote(event.target.value);
+            }}
+            onKeyDown={cancelOnEscape}
+            placeholder="Пояснение"
+            value={note}
+          />
+          {validationError === null ? null : (
+            <span className="task-edit-error" id={`task-edit-error-${task.id}`} role="alert">
+              {validationError}
+            </span>
+          )}
+          <span className="task-edit-actions">
+            <button aria-label="Сохранить изменения" className="task-edit-save" type="submit">
+              Сохранить
+            </button>
+            <button className="task-edit-cancel" onClick={cancelEditing} type="button">
+              Отмена
+            </button>
+          </span>
+        </form>
+      ) : <div
         aria-label={dragHandle === undefined ? undefined : `Переместить: ${task.title}`}
         className={`task-copy${dragHandle === undefined ? "" : " task-copy--draggable"}${pendingDelete ? " task-copy--pending-delete" : ""}`}
         onClick={pendingDelete ? onCancelDelete : undefined}
+        onDoubleClick={pendingDelete ? undefined : startEditing}
         onKeyDown={
           pendingDelete
             ? (event) => {
@@ -90,8 +164,8 @@ export function TaskRow({
             <span className="task-delete-progress__fill" style={{ width: `${String(Math.round(deleteProgress * 100))}%` }} />
           </span>
         ) : null}
-      </div>
-      {onDelete === undefined || pendingDelete ? null : (
+      </div>}
+      {editing || onDelete === undefined || pendingDelete ? null : (
         <button
           aria-label={`Удалить: ${task.title}`}
           className="task-delete"

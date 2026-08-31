@@ -22,6 +22,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   formatSectionHeading,
+  editTask,
   moveTask,
   removeTask,
   setTaskCompleted,
@@ -148,11 +149,12 @@ interface SortableChildProps {
   deleteProgress: (id: string) => number;
   isPending: (id: string) => boolean;
   onDelete: (task: ProjectedTask) => void;
+  onEdit: (task: ProjectedTask, values: { note: string | null; title: string }) => void;
   onToggle: (task: ProjectedTask) => void;
   task: ProjectedTask;
 }
 
-function SortableChild({ activeDrag, cancelDelete, deleteProgress, isPending, onDelete, onToggle, task }: SortableChildProps) {
+function SortableChild({ activeDrag, cancelDelete, deleteProgress, isPending, onDelete, onEdit, onToggle, task }: SortableChildProps) {
   const disableDrop =
     activeDrag?.kind === "parent" ||
     (activeDrag?.kind === "child" && activeDrag.parentId !== task.parentId);
@@ -182,6 +184,7 @@ function SortableChild({ activeDrag, cancelDelete, deleteProgress, isPending, on
       onDelete={() => {
         onDelete(task);
       }}
+      onEdit={onEdit}
       onCancelDelete={() => {
         cancelDelete(task.id);
       }}
@@ -204,10 +207,11 @@ interface SortableBlockProps {
   deleteProgress: (id: string) => number;
   isPending: (id: string) => boolean;
   onDelete: (task: ProjectedTask) => void;
+  onEdit: (task: ProjectedTask, values: { note: string | null; title: string }) => void;
   onToggle: (task: ProjectedTask) => void;
 }
 
-function SortableBlock({ activeDrag, block, cancelDelete, deleteProgress, isPending, onDelete, onToggle }: SortableBlockProps) {
+function SortableBlock({ activeDrag, block, cancelDelete, deleteProgress, isPending, onDelete, onEdit, onToggle }: SortableBlockProps) {
   const {
     attributes,
     isDragging,
@@ -243,6 +247,7 @@ function SortableBlock({ activeDrag, block, cancelDelete, deleteProgress, isPend
         onDelete={() => {
           onDelete(block.parent);
         }}
+        onEdit={onEdit}
         onCancelDelete={() => {
           cancelDelete(block.parent.id);
         }}
@@ -263,6 +268,7 @@ function SortableBlock({ activeDrag, block, cancelDelete, deleteProgress, isPend
             isPending={isPending}
             key={child.id}
             onDelete={onDelete}
+            onEdit={onEdit}
             onToggle={onToggle}
             task={child}
           />
@@ -366,6 +372,13 @@ export function Timeline({ active = true }: { active?: boolean }) {
 
   const deleteTask = (task: ProjectedTask): void => {
     requestDelete(task.id);
+  };
+
+  const editTaskValues = (
+    task: ProjectedTask,
+    values: { note: string | null; title: string },
+  ): void => {
+    editTask(doc, task.id, values);
   };
 
   const requestTaskCreation = (bucket: Bucket): void => {
@@ -503,6 +516,8 @@ export function Timeline({ active = true }: { active?: boolean }) {
           const heading = formatSectionHeading(section.bucket, today);
           const [primary, secondary] = sectionLabels(section.bucket, today);
           const blocks = taskBlocks(section.tasks);
+          const incompleteBlocks = blocks.filter(({ parent }) => !parent.effectiveCompleted);
+          const completedBlocks = blocks.filter(({ parent }) => parent.effectiveCompleted);
           const variant = section.bucket.kind === "later"
             ? "far"
             : section.bucket.kind === "much-later"
@@ -531,10 +546,10 @@ export function Timeline({ active = true }: { active?: boolean }) {
               </button>
               <div className="timeline-tasks">
                 <SortableContext
-                  items={blocks.map(({ parent }) => parentDragId(parent.id))}
+                  items={incompleteBlocks.map(({ parent }) => parentDragId(parent.id))}
                   strategy={verticalListSortingStrategy}
                 >
-                  {blocks.map((block) => (
+                  {incompleteBlocks.map((block) => (
                     <SortableBlock
                       activeDrag={activeDrag}
                       block={block}
@@ -543,10 +558,36 @@ export function Timeline({ active = true }: { active?: boolean }) {
                       isPending={isPending}
                       key={block.parent.id}
                       onDelete={deleteTask}
+                      onEdit={editTaskValues}
                       onToggle={toggleTask}
                     />
                   ))}
                 </SortableContext>
+                {completedBlocks.length === 0 ? null : (
+                  <details className="completed-cut">
+                    <summary className="completed-cut-summary">
+                      Выполненные ({completedBlocks.length})
+                    </summary>
+                    <SortableContext
+                      items={completedBlocks.map(({ parent }) => parentDragId(parent.id))}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      {completedBlocks.map((block) => (
+                        <SortableBlock
+                          activeDrag={activeDrag}
+                          block={block}
+                          cancelDelete={cancelDelete}
+                          deleteProgress={progress}
+                          isPending={isPending}
+                          key={block.parent.id}
+                          onDelete={deleteTask}
+                          onEdit={editTaskValues}
+                          onToggle={toggleTask}
+                        />
+                      ))}
+                    </SortableContext>
+                  </details>
+                )}
               </div>
             </DroppableSection>
           );

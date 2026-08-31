@@ -158,6 +158,11 @@ export class SyncClient implements SyncClientApi {
       await this.#store.resetAcknowledgedSinceSnapshot(this.#material.vaultId);
     }
 
+    // A local edit can arrive while the network request above is in flight.
+    // Wait for its encryption/persistence before claiming that the outbox is
+    // empty; otherwise the UI can briefly (or, without polling, indefinitely)
+    // report "synced" while a captured update is still being enqueued.
+    await this.#captureChain;
     const pending = (await this.#store.listOutbox(this.#material.vaultId, 1)).length > 0;
     return { uploaded, downloaded, cursor, status: pending ? "pending" : "synced" };
   }

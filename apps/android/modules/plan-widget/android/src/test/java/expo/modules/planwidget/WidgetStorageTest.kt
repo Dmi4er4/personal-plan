@@ -49,4 +49,28 @@ class WidgetStorageTest {
     assertEquals(current, selectWidgetSnapshot(preferences, fallback))
     assertEquals(fallback, selectWidgetSnapshot(mutablePreferencesOf(), fallback))
   }
+
+  @Test fun completedCutStateTogglesIndependentlyForEachSection() {
+    val preferences = mutablePreferencesOf()
+
+    assertEquals(false, preferences[completedExpandedKey("today")] ?: false)
+    assertEquals(true, toggleCompletedExpanded(preferences, "today"))
+    assertEquals(true, preferences[completedExpandedKey("today")])
+    assertEquals(false, preferences[completedExpandedKey("tomorrow")] ?: false)
+    assertEquals(false, toggleCompletedExpanded(preferences, "today"))
+  }
+
+  @Test fun taskBlocksKeepCompletedChildrenWithTheirParent() {
+    val blocks = taskBlocks(listOf(
+      NativeTask("open", "Open", null, false, 0),
+      NativeTask("done-child", "Done child", null, true, 1),
+      NativeTask("done", "Done", null, true, 0),
+      NativeTask("effective-child", "Effective child", null, true, 1),
+    ))
+
+    assertEquals(listOf("open", "done"), blocks.map { it.parent.id })
+    assertEquals(listOf("open", "done-child"), blocks[0].tasks.map { it.id })
+    assertEquals(listOf("done", "effective-child"), blocks[1].tasks.map { it.id })
+    assertEquals(listOf("done"), blocks.filter { it.parent.completed }.map { it.parent.id })
+  }
 }

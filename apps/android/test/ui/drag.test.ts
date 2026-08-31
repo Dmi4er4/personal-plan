@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   bucketsEqual,
   flattenSections,
+  incompleteBlockIdsForBucket,
   resolveChildDropDestination,
   resolveDropDestination,
+  sameTimelineOrder,
   sectionKey,
   taskBlocks,
   type ProjectedTask,
@@ -33,6 +35,15 @@ function task(id: string, parentId: string | null = null): ProjectedTask {
   };
 }
 
+function completedTask(id: string, parentId: string | null = null): ProjectedTask {
+  return {
+    ...task(id, parentId),
+    completedAt: "2026-08-06T09:00:00.000Z",
+    completedOn: "2026-08-06",
+    effectiveCompleted: true,
+  };
+}
+
 const today: Bucket = { kind: "date", date: "2026-08-06" };
 const tomorrow: Bucket = { kind: "date", date: "2026-08-07" };
 
@@ -54,6 +65,12 @@ describe("drag helpers", () => {
     expect(bucketsEqual(today, tomorrow)).toBe(false);
   });
 
+  it("compares timeline order by stable item keys", () => {
+    const items = flattenSections([{ bucket: today, tasks: [task("a"), task("b")] }]);
+    expect(sameTimelineOrder(items, [...items])).toBe(true);
+    expect(sameTimelineOrder(items, pick(items, 0, 2, 1))).toBe(false);
+  });
+
   it("flattens sections into header + block items with stable keys", () => {
     const items = flattenSections([
       { bucket: today, tasks: [task("a"), task("a1", "a"), task("b")] },
@@ -71,6 +88,53 @@ describe("drag helpers", () => {
       throw new Error("expected a block item");
     }
     expect(blockA.block.tasks.map((t: ProjectedTask) => t.id)).toEqual(["a", "a1"]);
+  });
+
+  it("hides completed blocks behind a cut and only expands sections that were opened", () => {
+    const sections = [
+      { bucket: today, tasks: [task("open"), completedTask("done")] },
+      { bucket: tomorrow, tasks: [task("tomorrow")] },
+    ];
+
+    expect(flattenSections(sections).map((item) => item.key)).toEqual([
+      "header:date:2026-08-06",
+      "block:open",
+      "completed:date:2026-08-06",
+      "header:date:2026-08-07",
+      "block:tomorrow",
+    ]);
+    expect(
+      flattenSections(sections, new Set(["date:2026-08-06"])).map((item) => item.key),
+    ).toEqual([
+      "header:date:2026-08-06",
+      "block:open",
+      "completed:date:2026-08-06",
+      "block:done",
+      "header:date:2026-08-07",
+      "block:tomorrow",
+    ]);
+  });
+
+  it("does not count the completed cut as a drag destination", () => {
+    const items = flattenSections([
+      { bucket: today, tasks: [task("open"), completedTask("done")] },
+    ]);
+
+    expect(resolveDropDestination(items, "block:open")).toEqual({
+      bucket: today,
+      index: 0,
+    });
+  });
+
+  it("extracts the dropped incomplete order without completed blocks", () => {
+    const items = flattenSections([
+      { bucket: today, tasks: [task("old"), task("new"), completedTask("done")] },
+    ], new Set(["date:2026-08-06"]));
+    const reordered = pick(items, 0, 2, 1, 3, 4);
+
+    expect(incompleteBlockIdsForBucket(reordered, today)).toEqual(["new", "old"]);
+    expect(resolveDropDestination(reordered, "block:new")).toEqual({ bucket: today, index: 0 });
+    expect(resolveDropDestination(reordered, "block:done")).toBeNull();
   });
 
   it("resolves a same-bucket reorder", () => {

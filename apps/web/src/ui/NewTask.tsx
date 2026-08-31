@@ -1,4 +1,4 @@
-import { addTask, type Bucket, type LocalDate, type ProjectedPlan } from "@personal-plan/core";
+import { addTaskToIncompleteHead, type Bucket, type LocalDate, type ProjectedPlan } from "@personal-plan/core";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 
 import { usePlan } from "../app/PlanProvider.js";
@@ -61,17 +61,13 @@ export function NewTask({ projected, request = null, today }: NewTaskProps) {
       setValidationError("Введите название дела");
       return;
     }
-    const section = projected.active.find((entry) => bucketsEqual(entry.bucket, bucket));
-    const nextOrder = (section?.tasks ?? [])
-      .filter((task) => task.parentId === null)
-      .reduce((highestOrder, task) => Math.max(highestOrder, task.order), -1) + 1;
-    addTask(doc, {
+    addTaskToIncompleteHead(doc, {
       id: crypto.randomUUID(),
       title,
       note: null,
       bucket,
       parentId: null,
-      order: nextOrder,
+      order: 0,
       now: new Date().toISOString(),
     });
     cancel();

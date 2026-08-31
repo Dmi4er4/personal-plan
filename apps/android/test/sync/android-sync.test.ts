@@ -1,9 +1,28 @@
 import { addTask, createPlanDoc, snapshotPlan } from "@personal-plan/core";
 import { describe, expect, it, vi } from "vitest";
-import { configureAndroidSync, needsRemoteBootstrap, runAndroidSync } from "../../src/sync/android-sync";
+import * as Y from "yjs";
+import { configureAndroidSync, ensureAndroidFullStatePublished, needsRemoteBootstrap, runAndroidSync } from "../../src/sync/android-sync";
 import { runHeadlessAndroidSync } from "../../src/sync/headless-sync";
 
 describe("Android sync orchestration", () => {
+  it("publishes a complete local state exactly once for legacy convergence", async () => {
+    const doc = createPlanDoc();
+    addTask(doc, { id: "local-only", title: "Локальное дело", note: null, bucket: { kind: "later" }, parentId: null, order: 0, now: "2026-08-04T10:00:00.000Z" });
+    const syncClient = {
+      start: vi.fn(),
+      stop: vi.fn(async () => undefined),
+      enqueueCurrentState: vi.fn(async () => undefined),
+      bootstrapInto: vi.fn(),
+      syncOnce: vi.fn(),
+    };
+
+    await expect(ensureAndroidFullStatePublished(doc, syncClient)).resolves.toBe(true);
+    await expect(ensureAndroidFullStatePublished(doc, syncClient)).resolves.toBe(false);
+
+    expect(syncClient.enqueueCurrentState).toHaveBeenCalledOnce();
+    expect(doc.getMap("syncMaintenance").get("androidFullStateVersion")).toBe(1);
+  });
+
   it("processes widget state even offline", async () => {
     const doc = createPlanDoc();
     addTask(doc, { id: "task", title: "Дело", note: null, bucket: { kind: "date", date: "2026-08-04" }, parentId: null, order: 0, now: "2026-08-04T10:00:00.000Z" });
@@ -16,6 +35,31 @@ describe("Android sync orchestration", () => {
     expect(result.error).toBe("offline");
     expect(syncClient.syncOnce).not.toHaveBeenCalled();
     expect(bridge.requestRefresh).toHaveBeenCalledTimes(2);
+    configureAndroidSync(null);
+  });
+
+  it("repairs and captures missing legacy orders before syncing", async () => {
+    const doc = createPlanDoc();
+    addTask(doc, { id: "legacy", title: "Старое дело", note: null, bucket: { kind: "later" }, parentId: null, order: 0, now: "2026-08-04T10:00:00.000Z" });
+    doc.getMap<Y.Map<unknown>>("tasks").get("legacy")?.delete("order");
+    let captured = 0;
+    const syncClient = {
+      start: vi.fn(() => { doc.on("update", () => { captured += 1; }); }),
+      stop: vi.fn(async () => undefined),
+      enqueueCurrentState: vi.fn(async () => undefined),
+      bootstrapInto: vi.fn(),
+      syncOnce: vi.fn(),
+    };
+    const bridge = { readCommands: vi.fn(async () => []), acknowledgeCommands: vi.fn(async () => undefined), writeSnapshot: vi.fn(async () => undefined), requestRefresh: vi.fn(async () => undefined) };
+    const planStore = { updateCount: vi.fn(async () => 1), compact: vi.fn(), flush: vi.fn(async () => undefined) };
+    configureAndroidSync({ doc, bridge, syncClient, planStore: planStore as never, today: () => "2026-08-04", isOnline: async () => false });
+
+    await runAndroidSync("startup");
+
+    expect(captured).toBeGreaterThan(0);
+    expect(snapshotPlan(doc).diagnostics).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "invalid_task_order" })]),
+    );
     configureAndroidSync(null);
   });
 

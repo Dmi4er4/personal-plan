@@ -1,14 +1,16 @@
-import { addTask, moveTask, removeTask, setTaskCompleted, type Bucket, type ProjectedPlan, type LocalDate, type TaskSnapshot } from "@personal-plan/core";
+import { addTaskToIncompleteHead, editTask, moveTask, projectPlan, removeTask, reorderTaskSequence, setTaskCompleted, snapshotPlan, type Bucket, type ProjectedPlan, type LocalDate, type TaskSnapshot } from "@personal-plan/core";
 import { randomUUID } from "expo-crypto";
-import { useCallback, useMemo, useRef, useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Modal, Pressable, Text, TextInput, View } from "react-native";
 import DraggableFlatList, { type RenderItemParams } from "react-native-draggable-flatlist";
 import type * as Y from "yjs";
 import {
   bucketsEqual,
   flattenSections,
+  incompleteBlockIdsForBucket,
   resolveChildDropDestination,
   resolveDropDestination,
+  sameTimelineOrder,
   sectionKey,
   type TimelineItem,
 } from "./timeline-model";
@@ -19,6 +21,17 @@ import { usePendingDelete } from "./use-pending-delete";
 
 interface TimelineListHandle {
   scrollToOffset: (options: { animated: boolean; offset: number }) => void;
+}
+
+const DRAG_ANIMATION_CONFIG = {
+  damping: 28,
+  mass: 0.72,
+  overshootClamping: true,
+  stiffness: 260,
+} as const;
+
+function renderDragPlaceholder({ item }: { item: TimelineItem }) {
+  return item.type === "block" ? <View style={styles.dragPlaceholder} /> : null;
 }
 
 function sectionLabels(bucket: ProjectedPlan["active"][number]["bucket"], today: LocalDate): [string, string | null] {
@@ -40,9 +53,15 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newTaskBucket, setNewTaskBucket] = useState<Bucket>({ kind: "date", date: today });
-  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [expandedCompletedSections, setExpandedCompletedSections] = useState<Set<string>>(() => new Set());
+  const [editingTask, setEditingTask] = useState<TaskSnapshot | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editNote, setEditNote] = useState("");
+  const [editValidationError, setEditValidationError] = useState<string | null>(null);
+  const [optimisticItems, setOptimisticItems] = useState<TimelineItem[] | null>(null);
   const listRef = useRef<TimelineListHandle | null>(null);
   const newTaskInputRef = useRef<TextInput>(null);
+  const activeKeyRef = useRef<string | null>(null);
 
   const captureListRef = useCallback((instance: unknown) => {
     if (
@@ -67,50 +86,80 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
   // the drag (no onDragEnd) and leaves the UI stuck in drag mode. All sections
   // therefore stay in the list at all times — headers have constant height, so
   // empty days double as always-available drop targets for cross-day moves.
-  const items = useMemo(() => flattenSections(projected.active), [projected.active]);
+  const items = useMemo(
+    () => flattenSections(projected.active, expandedCompletedSections),
+    [expandedCompletedSections, projected.active],
+  );
+
+  useEffect(() => {
+    if (optimisticItems === null) return;
+    if (sameTimelineOrder(optimisticItems, items)) {
+      setOptimisticItems(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setOptimisticItems(null);
+    }, 1000);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [items, optimisticItems]);
 
   // Freeze the rendered data for the duration of a drag: async doc updates
   // (sync downloads, widget commands) would otherwise swap `data` mid-gesture
   // and cancel the drop. The frozen copy refreshes on the next render after
   // the gesture ends.
   const frozenItemsRef = useRef<TimelineItem[] | null>(null);
-  const listItems = frozenItemsRef.current ?? items;
+  const listItems = frozenItemsRef.current ?? optimisticItems ?? items;
 
-  const resetDrag = useCallback(() => {
+  const finishDrag = useCallback((data: TimelineItem[]) => {
     frozenItemsRef.current = null;
-    setActiveKey(null);
+    setOptimisticItems(data);
+    activeKeyRef.current = null;
   }, []);
 
   const handleDragBegin = useCallback((index: number) => {
     frozenItemsRef.current = items;
     const item = items[index];
-    if (item !== undefined && item.type === "block") {
-      setActiveKey(item.key);
-    }
+    activeKeyRef.current = item !== undefined && item.type === "block" && !item.block.parent.effectiveCompleted
+      ? item.key
+      : null;
   }, [items]);
 
   const handleDragEnd = useCallback(({ from, to, data }: { from: number; to: number; data: TimelineItem[] }) => {
-    const draggedKey = activeKey;
+    const draggedKey = activeKeyRef.current;
     const resolved = draggedKey === null ? null : resolveDropDestination(data, draggedKey);
     if (draggedKey !== null && from !== to) {
       const destination = resolved;
       const item = data.find((entry) => entry.key === draggedKey);
       if (destination !== null && item !== undefined && item.type === "block") {
-        moveTask(doc, item.block.parent.id, {
-          bucket: destination.bucket,
-          parentId: null,
-          index: destination.index,
-          now: new Date().toISOString(),
-        });
+        const taskIds = incompleteBlockIdsForBucket(data, destination.bucket);
+        if (taskIds.includes(item.block.parent.id)) {
+          try {
+            reorderTaskSequence(doc, {
+              bucket: destination.bucket,
+              parentId: null,
+              taskIds,
+              movedTaskId: item.block.parent.id,
+              now: new Date().toISOString(),
+            });
+            const snapshot = snapshotPlan(doc);
+            const projectedAfterDrop = projectPlan(snapshot.tasks, today, snapshot.records);
+            finishDrag(flattenSections(projectedAfterDrop.active, expandedCompletedSections));
+            return;
+          } catch (reason) {
+            console.warn("task reorder failed", reason instanceof Error ? reason.message : String(reason));
+          }
+        }
       }
     }
-    resetDrag();
-  }, [activeKey, doc, resetDrag]);
+    finishDrag(items);
+  }, [doc, expandedCompletedSections, finishDrag, items, today]);
 
   const createTask = () => {
-    const input = buildNewTask(newTitle, newTaskBucket, { projected, id: randomUUID(), now: new Date().toISOString() });
+    const input = buildNewTask(newTitle, newTaskBucket, { id: randomUUID(), now: new Date().toISOString() });
     if (input === null) return;
-    addTask(doc, input);
+    addTaskToIncompleteHead(doc, input);
     setNewTitle("");
     setCreating(false);
   };
@@ -124,6 +173,44 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
     });
   };
 
+  const toggleCompletedSection = (bucket: Bucket): void => {
+    const key = sectionKey(bucket);
+    setExpandedCompletedSections((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const startEditing = (task: TaskSnapshot): void => {
+    setEditingTask(task);
+    setEditTitle(task.title);
+    setEditNote(task.note ?? "");
+    setEditValidationError(null);
+  };
+
+  const cancelEditing = (): void => {
+    setEditingTask(null);
+    setEditValidationError(null);
+  };
+
+  const saveTaskEdit = (): void => {
+    if (editingTask === null) return;
+    if (editTitle.trim().length === 0) {
+      setEditValidationError("Введите название дела");
+      return;
+    }
+    editTask(doc, editingTask.id, {
+      title: editTitle,
+      note: editNote.length === 0 ? null : editNote,
+    });
+    cancelEditing();
+  };
+
   const renderTask = (task: TaskSnapshot, completed: boolean, drag?: () => void) => (
     <TaskRow
       key={task.id}
@@ -133,6 +220,7 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
       deleteProgress={progress(task.id)}
       onCancelDelete={() => cancelDelete(task.id)}
       onDelete={() => requestDelete(task.id)}
+      onOpen={() => startEditing(task)}
       onToggle={() => setTaskCompleted(doc, task.id, { completed: task.completedAt === null, at: new Date().toISOString(), on: today })}
       {...(drag !== undefined ? { onLongPress: drag } : {})}
     />
@@ -158,12 +246,34 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
         </View>
       );
     }
+    if (item.type === "completed-header") {
+      return (
+        <View style={styles.blockRow}>
+          <View style={styles.sectionLabelSpacer} />
+          <Pressable
+            accessibilityLabel={`${item.expanded ? "Скрыть" : "Показать"} выполненные дела: ${item.count}`}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: item.expanded }}
+            onPress={() => toggleCompletedSection(item.bucket)}
+            style={({ pressed }) => [styles.completedCut, pressed ? styles.completedCutPressed : undefined]}
+          >
+            <Text style={styles.completedCutText}>
+              {item.expanded ? "▾" : "▸"} Выполненные ({item.count})
+            </Text>
+          </Pressable>
+        </View>
+      );
+    }
     return (
       <View style={[styles.blockRow, isActive ? styles.dragging : undefined]}>
         <View style={styles.sectionLabelSpacer} />
         <View style={[styles.tasks, styles.tasksContainer]}>
           <View style={styles.taskBlock}>
-            {renderTask(item.block.parent, item.block.parent.effectiveCompleted, drag)}
+            {renderTask(
+              item.block.parent,
+              item.block.parent.effectiveCompleted,
+              item.block.parent.effectiveCompleted ? undefined : drag,
+            )}
             {item.block.tasks.length <= 1 ? null : (
               <DraggableFlatList
                 activationDistance={8}
@@ -247,19 +357,76 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
   );
 
   return (
-    <DraggableFlatList
-      activationDistance={8}
-      containerStyle={styles.timelineContainer}
-      data={listItems}
-      dragItemOverflow
-      keyboardShouldPersistTaps="handled"
-      keyExtractor={(item) => item.key}
-      ListHeaderComponent={header}
-      onDragBegin={handleDragBegin}
-      onDragEnd={handleDragEnd}
-      ref={captureListRef}
-      renderItem={renderItem}
-      testID="timeline"
-    />
+    <>
+      <DraggableFlatList
+        activationDistance={8}
+        animationConfig={DRAG_ANIMATION_CONFIG}
+        autoscrollSpeed={80}
+        autoscrollThreshold={72}
+        containerStyle={styles.timelineContainer}
+        data={listItems}
+        dragItemOverflow
+        keyboardShouldPersistTaps="handled"
+        keyExtractor={(item) => item.key}
+        ListHeaderComponent={header}
+        onDragBegin={handleDragBegin}
+        onDragEnd={handleDragEnd}
+        ref={captureListRef}
+        renderItem={renderItem}
+        renderPlaceholder={renderDragPlaceholder}
+        testID="timeline"
+      />
+      <Modal
+        animationType="fade"
+        onRequestClose={cancelEditing}
+        transparent
+        visible={editingTask !== null}
+      >
+        <View style={styles.editModalBackdrop}>
+          <View style={styles.editModalCard}>
+            <Text style={styles.editModalTitle}>Редактировать дело</Text>
+            <TextInput
+              accessibilityLabel="Название дела"
+              autoFocus
+              onChangeText={(value) => {
+                setEditTitle(value);
+                setEditValidationError(null);
+              }}
+              onSubmitEditing={saveTaskEdit}
+              returnKeyType="done"
+              style={styles.input}
+              value={editTitle}
+            />
+            <TextInput
+              accessibilityLabel="Пояснение дела"
+              onChangeText={setEditNote}
+              placeholder="Пояснение"
+              style={styles.input}
+              value={editNote}
+            />
+            {editValidationError === null ? null : (
+              <Text accessibilityRole="alert" style={styles.error}>{editValidationError}</Text>
+            )}
+            <View style={styles.editModalActions}>
+              <Pressable
+                accessibilityLabel="Сохранить изменения"
+                accessibilityRole="button"
+                onPress={saveTaskEdit}
+                style={styles.button}
+              >
+                <Text style={styles.buttonText}>Сохранить</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                onPress={cancelEditing}
+                style={styles.secondaryButton}
+              >
+                <Text style={styles.secondaryButtonText}>Отмена</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 }

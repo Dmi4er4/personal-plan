@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 import {
   addTask,
+  addTaskToIncompleteHead,
   createPlanDoc,
   editTask,
   moveTask,
   projectPlan,
   promoteSubtask,
+  reorderTaskSequence,
   removeTask,
   setTaskCompleted,
   snapshotPlan,
@@ -16,6 +18,155 @@ const monday = { kind: "date", date: "2026-08-03" } as const;
 const tuesday = { kind: "date", date: "2026-08-04" } as const;
 
 describe("task commands", () => {
+  it("inserts a new task before incomplete and completed siblings", () => {
+    const doc = createPlanDoc();
+    for (const [id, order] of [
+      ["first", 0],
+      ["completed", 1],
+    ] as const) {
+      addTask(doc, {
+        id,
+        title: id,
+        note: null,
+        bucket: monday,
+        parentId: null,
+        order,
+        now: "2026-08-03T08:00:00.000Z",
+      });
+    }
+    setTaskCompleted(doc, "completed", {
+      completed: true,
+      at: "2026-08-03T09:00:00.000Z",
+      on: "2026-08-03",
+    });
+
+    addTaskToIncompleteHead(doc, {
+      id: "new",
+      title: "new",
+      note: null,
+      bucket: monday,
+      parentId: null,
+      order: 2,
+      now: "2026-08-03T10:00:00.000Z",
+    });
+
+    expect(snapshotPlan(doc).tasks.map(({ id, order }) => ({ id, order }))).toEqual([
+      { id: "new", order: 0 },
+      { id: "first", order: 1 },
+      { id: "completed", order: 2 },
+    ]);
+  });
+
+  it("atomically materializes and reorders carried-over tasks before today's tasks", () => {
+    const doc = createPlanDoc();
+    for (const [id, bucket, order] of [
+      ["old-a", monday, 0],
+      ["old-b", monday, 1],
+      ["new", tuesday, 0],
+      ["completed", tuesday, 1],
+    ] as const) {
+      addTask(doc, {
+        id,
+        title: id,
+        note: null,
+        bucket,
+        parentId: null,
+        order,
+        now: "2026-08-04T08:00:00.000Z",
+      });
+    }
+    setTaskCompleted(doc, "completed", {
+      completed: true,
+      at: "2026-08-04T08:30:00.000Z",
+      on: "2026-08-04",
+    });
+    let updates = 0;
+    doc.on("update", () => {
+      updates += 1;
+    });
+
+    reorderTaskSequence(doc, {
+      bucket: tuesday,
+      parentId: null,
+      taskIds: ["new", "old-b", "old-a"],
+      movedTaskId: "new",
+      now: "2026-08-04T09:00:00.000Z",
+    });
+
+    expect(updates).toBe(1);
+    expect(snapshotPlan(doc).tasks.map(({ id, bucket, order }) => ({ id, bucket, order }))).toEqual([
+      { id: "new", bucket: tuesday, order: 0 },
+      { id: "old-b", bucket: tuesday, order: 1 },
+      { id: "old-a", bucket: tuesday, order: 2 },
+      { id: "completed", bucket: tuesday, order: 3 },
+    ]);
+    expect(projectPlan(snapshotPlan(doc).tasks, "2026-08-04").active[0]?.tasks.map(({ id }) => id)).toEqual([
+      "new",
+      "old-b",
+      "old-a",
+      "completed",
+    ]);
+  });
+
+  it("repairs missing legacy orders before inserting a new task", () => {
+    const doc = createPlanDoc();
+    addTask(doc, {
+      id: "legacy",
+      title: "legacy",
+      note: null,
+      bucket: { kind: "later" },
+      parentId: null,
+      order: 0,
+      now: "2026-08-03T08:00:00.000Z",
+    });
+    doc.getMap<Y.Map<unknown>>("tasks").get("legacy")?.delete("order");
+    addTask(doc, {
+      id: "first",
+      title: "first",
+      note: null,
+      bucket: monday,
+      parentId: null,
+      order: 0,
+      now: "2026-08-03T08:01:00.000Z",
+    });
+
+    addTaskToIncompleteHead(doc, {
+      id: "new",
+      title: "new",
+      note: null,
+      bucket: monday,
+      parentId: null,
+      order: Number.NaN,
+      now: "2026-08-03T08:02:00.000Z",
+    });
+
+    const snapshot = snapshotPlan(doc);
+    expect(snapshot.diagnostics).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "invalid_task_order" })]),
+    );
+    expect(snapshot.tasks.filter(({ bucket }) => bucket.kind === "date").map(({ id, order }) => ({ id, order }))).toEqual([
+      { id: "new", order: 0 },
+      { id: "first", order: 1 },
+    ]);
+  });
+
+  it("rejects an invalid order before adding a task to the document", () => {
+    const doc = createPlanDoc();
+
+    expect(() => {
+      addTask(doc, {
+        id: "invalid",
+        title: "invalid",
+        note: null,
+        bucket: monday,
+        parentId: null,
+        order: Number.NaN,
+        now: "2026-08-03T08:00:00.000Z",
+      });
+    }).toThrow("invalid_task_order");
+    expect(doc.getMap("tasks").has("invalid")).toBe(false);
+  });
+
   it("persists a parent reopen day without clearing completed child metadata", () => {
     const doc = createPlanDoc();
     addTask(doc, {

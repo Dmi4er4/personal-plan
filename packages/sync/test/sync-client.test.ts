@@ -39,6 +39,52 @@ class MemoryRelay implements RelayTransport {
   }
 }
 
+class BlockingEnqueueStore extends MemoryStore {
+  readonly enqueueStarted: Promise<void>;
+  private markEnqueueStarted!: () => void;
+  private readonly enqueueReleased: Promise<void>;
+  private releaseEnqueue!: () => void;
+
+  constructor() {
+    super();
+    this.enqueueStarted = new Promise((resolve) => { this.markEnqueueStarted = resolve; });
+    this.enqueueReleased = new Promise((resolve) => { this.releaseEnqueue = resolve; });
+  }
+
+  override async enqueue(entry: OutboxEntry): Promise<void> {
+    this.markEnqueueStarted();
+    await this.enqueueReleased;
+    await super.enqueue(entry);
+  }
+
+  allowEnqueue(): void {
+    this.releaseEnqueue();
+  }
+}
+
+class BlockingListRelay extends MemoryRelay {
+  readonly listStarted: Promise<void>;
+  private markListStarted!: () => void;
+  private readonly listReleased: Promise<void>;
+  private releaseList!: () => void;
+
+  constructor() {
+    super();
+    this.listStarted = new Promise((resolve) => { this.markListStarted = resolve; });
+    this.listReleased = new Promise((resolve) => { this.releaseList = resolve; });
+  }
+
+  override async list(vaultId: string, authToken: string, after: number): Promise<ListUpdatesResponse> {
+    this.markListStarted();
+    await this.listReleased;
+    return super.list(vaultId, authToken, after);
+  }
+
+  allowList(): void {
+    this.releaseList();
+  }
+}
+
 describe("SyncClient", () => {
   it("persists outboxes and converges two independently edited documents", async () => {
     const provider = new WebCryptoProvider();
@@ -92,5 +138,32 @@ describe("SyncClient", () => {
     restored.getMap("tasks");
     await new SyncClient({ provider, material, store: new MemoryStore(), transport: relay }).bootstrapInto(restored);
     expect(restored.getMap("tasks").toJSON()).toEqual(doc.getMap("tasks").toJSON());
+  });
+
+  it("does not report synced while an edit captured during download is still being enqueued", async () => {
+    const provider = new WebCryptoProvider();
+    const material = await deriveVaultMaterial(provider, new Uint8Array(32).fill(4));
+    const relay = new BlockingListRelay();
+    const store = new BlockingEnqueueStore();
+    const doc = new Y.Doc();
+    doc.getMap("tasks");
+    const client = new SyncClient({ provider, material, store, transport: relay });
+    client.start(doc);
+
+    let completed = false;
+    const syncing = client.syncOnce(doc).then((result) => {
+      completed = true;
+      return result;
+    });
+    await relay.listStarted;
+    doc.getMap("tasks").set("during-download", "Локальное изменение");
+    await store.enqueueStarted;
+    relay.allowList();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(completed).toBe(false);
+
+    store.allowEnqueue();
+    await expect(syncing).resolves.toMatchObject({ status: "pending" });
+    expect(store.outbox).toHaveLength(1);
   });
 });

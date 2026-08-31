@@ -6,7 +6,9 @@ import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
@@ -47,6 +49,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 data class NativeTask(val id: String, val title: String, val note: String?, val completed: Boolean, val depth: Int)
+data class NativeTaskBlock(val parent: NativeTask, val tasks: List<NativeTask>)
 data class NativeSection(val key: String, val primary: String, val secondary: String?, val farSection: Boolean, val muchLaterDivider: Boolean, val tasks: List<NativeTask>)
 data class NativeSnapshot(val status: String, val sections: List<NativeSection>)
 
@@ -55,15 +58,33 @@ internal val WidgetSnapshotKey = stringPreferencesKey("snapshot_json_v1")
 internal fun selectWidgetSnapshot(preferences: Preferences, fallback: String?): String? =
   preferences[WidgetSnapshotKey] ?: fallback
 
+internal fun completedExpandedKey(sectionKey: String) = booleanPreferencesKey("completed_expanded:$sectionKey")
+
+internal fun toggleCompletedExpanded(preferences: MutablePreferences, sectionKey: String): Boolean {
+  val key = completedExpandedKey(sectionKey)
+  val expanded = !(preferences[key] ?: false)
+  preferences[key] = expanded
+  return expanded
+}
+
+internal fun taskBlocks(tasks: List<NativeTask>): List<NativeTaskBlock> {
+  val blocks = mutableListOf<MutableList<NativeTask>>()
+  tasks.forEach { task ->
+    if (task.depth == 0 || blocks.isEmpty()) blocks.add(mutableListOf(task)) else blocks.last().add(task)
+  }
+  return blocks.map { NativeTaskBlock(it.first(), it.toList()) }
+}
+
 class PlanWidget : GlanceAppWidget() {
   override val stateDefinition = PreferencesGlanceStateDefinition
 
   override suspend fun provideGlance(context: Context, id: GlanceId) {
     val fallback = withContext(Dispatchers.IO) { WidgetStorage(context).readSnapshot() }
     provideContent {
-      val snapshot = parseSnapshot(selectWidgetSnapshot(currentState<Preferences>(), fallback))
+      val preferences = currentState<Preferences>()
+      val snapshot = parseSnapshot(selectWidgetSnapshot(preferences, fallback))
       android.util.Log.i("PlanWidget", "compose status=${snapshot?.status} sections=${snapshot?.sections?.size}")
-      WidgetContent(snapshot)
+      WidgetContent(snapshot, preferences)
     }
   }
 
@@ -93,7 +114,7 @@ private fun openListIntent(context: Context): Intent =
     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
   }
 
-@Composable private fun WidgetContent(snapshot: NativeSnapshot?) {
+@Composable private fun WidgetContent(snapshot: NativeSnapshot?, preferences: Preferences) {
   val context = LocalContext.current
   val openList = openListIntent(context)
   val rootClickable = GlanceModifier.fillMaxSize().background(widgetColor(0xFFF7F7FB)).padding(12.dp).clickable(actionStartActivity(openList))
@@ -112,7 +133,9 @@ private fun openListIntent(context: Context): Intent =
     } else {
       val compact = LocalSize.current.width < 280.dp
       LazyColumn(GlanceModifier.fillMaxSize().padding(top = 8.dp)) {
-        items(snapshot.sections, itemId = { it.key.hashCode().toLong() }) { section -> SectionContent(section, compact, openList) }
+        items(snapshot.sections, itemId = { it.key.hashCode().toLong() }) { section ->
+          SectionContent(section, compact, openList, preferences[completedExpandedKey(section.key)] ?: false)
+        }
         // Tail filler: covers the empty area below the last section so the whole
         // widget surface opens the app (LazyColumn shadows the root clickable).
         // 600dp spans even a fully stretched widget.
@@ -124,7 +147,10 @@ private fun openListIntent(context: Context): Intent =
   }
 }
 
-@Composable private fun SectionContent(section: NativeSection, compact: Boolean, openList: Intent) {
+@Composable private fun SectionContent(section: NativeSection, compact: Boolean, openList: Intent, completedExpanded: Boolean) {
+  val blocks = taskBlocks(section.tasks)
+  val incompleteBlocks = blocks.filterNot { it.parent.completed }
+  val completedBlocks = blocks.filter { it.parent.completed }
   Column(GlanceModifier.fillMaxWidth().clickable(actionStartActivity(openList))) {
     if (section.farSection) {
       Spacer(GlanceModifier.height(12.dp))
@@ -145,9 +171,31 @@ private fun openListIntent(context: Context): Intent =
         if (!compact && section.secondary != null) Text(section.secondary, style = TextStyle(color = widgetColor(0xFF858692)))
       }
       Column(GlanceModifier.defaultWeight().background(widgetColor(0xFFEEEFFE)).padding(start = 2.dp).clickable(actionStartActivity(openList))) {
-        section.tasks.forEach { TaskContent(it, openList) }
+        incompleteBlocks.forEach { block -> block.tasks.forEach { TaskContent(it, openList) } }
+        if (completedBlocks.isNotEmpty()) {
+          CompletedCut(section.key, completedBlocks.size, completedExpanded)
+          if (completedExpanded) completedBlocks.forEach { block -> block.tasks.forEach { TaskContent(it, openList) } }
+        }
       }
     }
+  }
+}
+
+@Composable private fun CompletedCut(sectionKey: String, count: Int, expanded: Boolean) {
+  val toggle = actionRunCallback<ToggleCompletedSectionAction>(
+    actionParametersOf(ToggleCompletedSectionAction.SectionKey to sectionKey),
+  )
+  Column(
+    GlanceModifier.fillMaxWidth()
+      .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
+      .clickable(toggle),
+  ) {
+    Spacer(GlanceModifier.fillMaxWidth().height(1.dp).background(widgetColor(0xFFD5D6DE)))
+    Text(
+      "${if (expanded) "▾" else "▸"} Выполненные ($count)",
+      modifier = GlanceModifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp),
+      style = TextStyle(color = widgetColor(0xFF747580), fontWeight = FontWeight.Medium),
+    )
   }
 }
 

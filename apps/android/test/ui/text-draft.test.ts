@@ -6,6 +6,7 @@ import {
   snapshotPlan,
 } from "@personal-plan/core";
 import { describe, expect, it } from "vitest";
+import * as Y from "yjs";
 import { commitTextDraft } from "../../src/ui/text-draft";
 
 const TODAY = "2026-08-10";
@@ -55,5 +56,39 @@ describe("text draft commit", () => {
 
     expect(result.kind).toBe("invalid");
     expect(canonical(doc)).toBe(before);
+  });
+
+  it("applies a reordered draft when a legacy task has no stored order", () => {
+    const doc = createPlanDoc();
+    for (const [id, title, order] of [
+      ["first", "Первое дело", 0],
+      ["legacy", "Старое дело", 1],
+    ] as const) {
+      addTask(doc, {
+        id,
+        title,
+        note: null,
+        bucket: { kind: "date", date: TODAY },
+        parentId: null,
+        order,
+        now: NOW,
+      });
+    }
+    doc.getMap<Y.Map<unknown>>("tasks").get("legacy")?.delete("order");
+    const before = canonical(doc);
+    const [heading, first, legacy] = before.split("\n");
+
+    const result = commitTextDraft(
+      doc,
+      [heading, legacy, first].join("\n"),
+      before,
+      TODAY,
+      { idFactory: () => "unused", now: NOW },
+    );
+
+    expect(result.kind).toBe("applied");
+    expect(snapshotPlan(doc).diagnostics).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "invalid_task_order" })]),
+    );
   });
 });

@@ -1,3 +1,4 @@
+import { repairInvalidTaskOrders } from "@personal-plan/core";
 import { base64UrlDecode, base64UrlEncode, createPairingQr, deriveVaultMaterial, generateRootSecret, parsePairingQr, phraseToRootSecret, rootSecretToPhrase, SyncClient, SyncIntegrityError, WebCryptoProvider, type RelayTransport, type VaultMaterial } from "@personal-plan/sync";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
@@ -116,6 +117,9 @@ export function WebSyncProvider({ children, options }: WebSyncProviderProps) {
       },
     });
     clientRef.current = client;
+    const repairOrders = (): void => {
+      repairInvalidTaskOrders(doc);
+    };
 
     const performSync = async (): Promise<void> => {
       if (!active) return;
@@ -141,7 +145,11 @@ export function WebSyncProvider({ children, options }: WebSyncProviderProps) {
       if (pollTimer !== null) window.clearTimeout(pollTimer);
       pollTimer = window.setTimeout(() => {
         pollTimer = null;
-        if (!active || document.visibilityState !== "visible") return;
+        if (!active) return;
+        if (document.visibilityState !== "visible") {
+          schedulePoll();
+          return;
+        }
         void runSync().finally(schedulePoll);
       }, Math.max(1, options.pollIntervalMs ?? 5_000));
     };
@@ -162,9 +170,11 @@ export function WebSyncProvider({ children, options }: WebSyncProviderProps) {
         await client.bootstrapInto(doc);
       } else {
         client.start(doc);
-        if (mode === "seed") {
-          await client.enqueueCurrentState(doc);
-        }
+      }
+      doc.on("update", repairOrders);
+      repairInvalidTaskOrders(doc);
+      if (mode === "seed") {
+        await client.enqueueCurrentState(doc);
       }
       await runSync();
       schedulePoll();
@@ -186,6 +196,7 @@ export function WebSyncProvider({ children, options }: WebSyncProviderProps) {
       window.removeEventListener("online", online);
       window.removeEventListener("focus", focus);
       document.removeEventListener("visibilitychange", visibility);
+      doc.off("update", repairOrders);
       syncRef.current = null;
       clientRef.current = null;
       void client.stop();

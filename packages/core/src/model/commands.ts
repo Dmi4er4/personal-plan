@@ -1,5 +1,5 @@
 import * as Y from "yjs";
-import { normalizeOrders } from "./rank.js";
+import { normalizeOrders, repairInvalidTaskOrders } from "./rank.js";
 import {
   PlanInvariantError,
   requireTaskMap,
@@ -19,6 +19,10 @@ import {
 } from "./types.js";
 
 const APPLIED_WIDGET_COMMANDS = "appliedWidgetCommands";
+
+function isValidOrder(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
 
 function safeTaskSnapshot(doc: Y.Doc, id: string) {
   const task = snapshotPlan(doc).records.find((candidate) => candidate.id === id);
@@ -93,7 +97,7 @@ function siblingMaps(
   doc: Y.Doc,
   bucket: Bucket,
   parentId: string | null,
-  excludedId: string,
+  excludedId: string | null,
 ): Y.Map<unknown>[] {
   const expectedBucket = bucketKey(bucket);
   return snapshotPlan(doc).records
@@ -101,7 +105,7 @@ function siblingMaps(
       return (
         !task.deleted &&
         !(task.prunedOn !== null && task.completedAt !== null) &&
-        task.id !== excludedId &&
+        (excludedId === null || task.id !== excludedId) &&
         bucketKey(task.bucket) === expectedBucket &&
         task.parentId === parentId
       );
@@ -141,6 +145,9 @@ function createText(value: string | null): Y.Text {
 }
 
 export function addTask(doc: Y.Doc, input: NewTaskInput): void {
+  if (!isValidOrder(input.order)) {
+    throw new PlanInvariantError("invalid_task_order");
+  }
   doc.transact(() => {
     const tasks = doc.getMap<Y.Map<unknown>>("tasks");
     if (tasks.has(input.id)) {
@@ -175,6 +182,20 @@ export function addTask(doc: Y.Doc, input: NewTaskInput): void {
     map.set("prunedOn", null);
     tasks.set(input.id, map);
   });
+}
+
+export function addTaskToIncompleteHead(doc: Y.Doc, input: NewTaskInput): void {
+  repairInvalidTaskOrders(doc);
+  doc.transact(() => {
+    addTask(doc, { ...input, order: 0 });
+    const task = safeTaskSnapshot(doc, input.id);
+    moveTask(doc, task.id, {
+      bucket: task.bucket,
+      parentId: task.parentId,
+      index: 0,
+      now: input.now,
+    });
+  }, "add-task-to-incomplete-head");
 }
 
 export function editTask(doc: Y.Doc, id: string, patch: EditTaskPatch): void {
@@ -251,7 +272,6 @@ function validateMove(
 
 export function moveTask(doc: Y.Doc, id: string, destination: MoveDestination): void {
   doc.transact(() => {
-    const tasks = doc.getMap<Y.Map<unknown>>("tasks");
     const map = requireTaskMap(doc, id);
     const task = safeTaskSnapshot(doc, id);
     validateMove(doc, task.parentId, destination);
@@ -279,8 +299,8 @@ export function moveTask(doc: Y.Doc, id: string, destination: MoveDestination): 
     map.set("updatedAt", destination.now);
     writeOrders(oldSiblings);
     writeOrders(orderedDestination);
-    normalizeOrders(tasks, task.bucket, task.parentId);
-    normalizeOrders(tasks, destination.bucket, destination.parentId);
+    normalizeOrders(doc, task.bucket, task.parentId);
+    normalizeOrders(doc, destination.bucket, destination.parentId);
 
     if (task.parentId === null && bucketKey(task.bucket) !== bucketKey(destination.bucket)) {
       for (const child of snapshotPlan(doc).records) {
@@ -294,19 +314,105 @@ export function moveTask(doc: Y.Doc, id: string, destination: MoveDestination): 
   });
 }
 
+export interface ReorderTaskSequenceInput {
+  bucket: Bucket;
+  parentId: string | null;
+  taskIds: readonly string[];
+  movedTaskId: string;
+  now: string;
+}
+
+/**
+ * Persists the exact visible order of one projected task sequence.
+ *
+ * A projected day may contain incomplete tasks whose stored bucket is an older
+ * date. Reordering just the dragged task cannot place a newly-created task
+ * before those carry-overs, because they still belong to different stored
+ * containers. This command materializes the whole visible sequence into the
+ * destination container and writes its order atomically.
+ */
+export function reorderTaskSequence(doc: Y.Doc, input: ReorderTaskSequenceInput): void {
+  const uniqueIds = new Set(input.taskIds);
+  if (
+    input.taskIds.length === 0 ||
+    uniqueIds.size !== input.taskIds.length ||
+    !uniqueIds.has(input.movedTaskId)
+  ) {
+    throw new PlanInvariantError("invalid_task_sequence");
+  }
+
+  const before = snapshotPlan(doc);
+  const byId = new Map(before.records.map((task) => [task.id, task]));
+  const orderedTasks = input.taskIds.map((id) => {
+    const task = byId.get(id);
+    if (task === undefined) {
+      throw new PlanInvariantError("task_not_found");
+    }
+    if (task.deleted || task.parentId !== input.parentId) {
+      throw new PlanInvariantError("invalid_task_sequence");
+    }
+    validateMove(doc, task.parentId, {
+      bucket: input.bucket,
+      parentId: input.parentId,
+      index: 0,
+      now: input.now,
+    });
+    return task;
+  });
+  const sourceBuckets = new Map(orderedTasks.map((task) => [bucketKey(task.bucket), task.bucket]));
+
+  doc.transact(() => {
+    const orderedMaps = orderedTasks.map((task) => requireTaskMap(doc, task.id));
+    for (const [index, task] of orderedTasks.entries()) {
+      const map = orderedMaps[index];
+      if (map === undefined) continue;
+      const bucketChanged = bucketKey(task.bucket) !== bucketKey(input.bucket);
+      map.set("bucket", bucketKey(input.bucket));
+      map.set("parentId", input.parentId);
+      if (bucketChanged || task.id === input.movedTaskId) {
+        map.set("updatedAt", input.now);
+      }
+      if (bucketChanged && task.parentId === null) {
+        for (const child of before.records) {
+          if (child.parentId === task.id) {
+            const childMap = requireTaskMap(doc, child.id);
+            childMap.set("bucket", bucketKey(input.bucket));
+            childMap.set("updatedAt", input.now);
+          }
+        }
+      }
+    }
+
+    const remainingDestination = siblingMaps(doc, input.bucket, input.parentId, null)
+      .filter((map) => {
+        const id = map.get("id");
+        return typeof id !== "string" || !uniqueIds.has(id);
+      });
+    writeOrders([...orderedMaps, ...remainingDestination]);
+
+    for (const [key, sourceBucket] of sourceBuckets) {
+      if (key !== bucketKey(input.bucket)) {
+        normalizeOrders(doc, sourceBucket, input.parentId);
+      }
+    }
+  }, "reorder-task-sequence");
+}
+
 export function setTaskOrder(
   doc: Y.Doc,
   id: string,
   order: number,
   updatedAt: string,
 ): void {
+  if (!isValidOrder(order)) {
+    throw new PlanInvariantError("invalid_task_order");
+  }
   doc.transact(() => {
     const map = requireTaskMap(doc, id);
-    const task = snapshotTask(map);
-    if (task.order !== order) {
+    if (map.get("order") !== order) {
       map.set("order", order);
     }
-    if (task.updatedAt !== updatedAt) {
+    if (map.get("updatedAt") !== updatedAt) {
       map.set("updatedAt", updatedAt);
     }
   });
@@ -409,8 +515,8 @@ export function reparentTask(
     map.set("updatedAt", destination.now);
     writeOrders(oldSiblings);
     writeOrders(orderedDestination);
-    normalizeOrders(tasks, task.bucket, task.parentId);
-    normalizeOrders(tasks, parent.bucket, destination.parentId);
+    normalizeOrders(doc, task.bucket, task.parentId);
+    normalizeOrders(doc, parent.bucket, destination.parentId);
   });
 }
 
@@ -420,7 +526,6 @@ export function promoteSubtask(
   destination: MoveDestination,
 ): void {
   doc.transact(() => {
-    const tasks = doc.getMap<Y.Map<unknown>>("tasks");
     const map = requireTaskMap(doc, id);
     const task = snapshotTask(map);
     if (task.parentId === null) {
@@ -439,7 +544,7 @@ export function promoteSubtask(
     map.set("updatedAt", destination.now);
     writeOrders(oldSiblings);
     writeOrders(orderedDestination);
-    normalizeOrders(tasks, task.bucket, task.parentId);
-    normalizeOrders(tasks, destination.bucket, null);
+    normalizeOrders(doc, task.bucket, task.parentId);
+    normalizeOrders(doc, destination.bucket, null);
   });
 }

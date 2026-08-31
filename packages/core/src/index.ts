@@ -2,9 +2,11 @@ import * as Y from "yjs";
 
 export {
   addTask,
+  addTaskToIncompleteHead,
   applyWidgetCompletionCommand,
   editTask,
   moveTask,
+  reorderTaskSequence,
   promoteSubtask,
   pruneAppliedWidgetCommands,
   reparentTask,
@@ -16,6 +18,8 @@ export {
   PlanInvariantError,
   snapshotPlan,
 } from "./model/schema.js";
+export { repairInvalidTaskOrders } from "./model/rank.js";
+export { isLocalDate } from "./model/types.js";
 export { InvalidLocalDateError, addDays, compareLocalDate } from "./time/local-date.js";
 export {
   effectiveBucket,

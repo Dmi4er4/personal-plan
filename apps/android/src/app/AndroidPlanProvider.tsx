@@ -1,6 +1,7 @@
-import { projectPlan, snapshotPlan, type LocalDate } from "@personal-plan/core";
+import { isLocalDate, projectPlan, snapshotPlan, type LocalDate } from "@personal-plan/core";
 import { deriveVaultMaterial, SyncClient, type RelayTransport } from "@personal-plan/sync";
 import NetInfo from "@react-native-community/netinfo";
+import Constants from "expo-constants";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AppState, Text } from "react-native";
 import type * as Y from "yjs";
@@ -11,11 +12,19 @@ import { SecureVaultStore, type StoredVaultConfig } from "../storage/secure-vaul
 import { SqliteSyncStateStore } from "../storage/sqlite-sync-store";
 import { configureAndroidSync, runAndroidSync } from "../sync/android-sync";
 import { registerBackgroundSync } from "../sync/background-task";
+import { startForegroundSyncPolling } from "../sync/foreground-polling";
 import { AndroidHttpRelayTransport } from "../sync/http-relay-transport";
 import { processWidgetCommands } from "../widget/process-commands";
 import type { WidgetBridge, WidgetSnapshot } from "../widget/contracts";
 
-function today(): LocalDate { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` as LocalDate; }
+function today(): LocalDate {
+  const qaToday: unknown = Constants.expoConfig?.extra?.qaToday;
+  if (isLocalDate(qaToday)) {
+    return qaToday;
+  }
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` as LocalDate;
+}
 export interface AndroidPlanContext { doc: Y.Doc; today: LocalDate; projected: ReturnType<typeof projectPlan>; draft: string | null; rootSecret: Uint8Array; relayUrl: string; syncError: string | null; syncState: WidgetSnapshot["syncState"]; saveDraft(value: string): Promise<void>; clearDraft(): Promise<void>; restoreFromServer(): Promise<void>; disconnectVault(): Promise<void> }
 const Context = createContext<AndroidPlanContext | null>(null);
 export interface AndroidPlanProviderProps { children: ReactNode; config: StoredVaultConfig; planStore?: SqlitePlanStore; syncStore?: SqliteSyncStateStore; bridge?: WidgetBridge; transport?: RelayTransport; onRestoreFromServer?(): Promise<void>; onDisconnect?(): Promise<void> }
@@ -34,7 +43,7 @@ export function AndroidPlanProvider({ children, config, planStore, syncStore, br
   const resolvedBridge = bridge ?? PlanWidget;
   const resolvedTransport = useMemo(() => transport ?? new AndroidHttpRelayTransport(config.relayUrl), [config.relayUrl, transport]);
   const [loaded, setLoaded] = useState<{ doc: Y.Doc; draft: string | null } | null>(null); const [revision, setRevision] = useState(0); const [syncError, setSyncError] = useState<string | null>(null); const [syncState, setSyncState] = useState<WidgetSnapshot["syncState"]>("pending");
-  useEffect(() => { let cancelled = false; let doc: Y.Doc | null = null; let sync: SyncClient | null = null; let timer: ReturnType<typeof setTimeout> | null = null; let widgetTimer: ReturnType<typeof setTimeout> | null = null; let appState: { remove(): void } | null = null; let network: (() => void) | null = null;
+  useEffect(() => { let cancelled = false; let doc: Y.Doc | null = null; let sync: SyncClient | null = null; let timer: ReturnType<typeof setTimeout> | null = null; let widgetTimer: ReturnType<typeof setTimeout> | null = null; let appState: { remove(): void } | null = null; let network: (() => void) | null = null; let stopPolling: (() => void) | null = null;
     void Promise.all([resolvedPlanStore.load(), resolvedPlanStore.loadDraft(), deriveVaultMaterial(new ExpoCryptoProvider(), config.rootSecret)]).then(async ([nextDoc, draft, material]) => {
       if (cancelled) return; doc = nextDoc; sync = new SyncClient({ provider: new ExpoCryptoProvider(), material, store: resolvedSyncStore, transport: resolvedTransport });
       configureAndroidSync({ doc, planStore: resolvedPlanStore, syncClient: sync, bridge: resolvedBridge, today, isOnline: async () => (await NetInfo.fetch()).isConnected === true });
@@ -91,9 +100,15 @@ export function AndroidPlanProvider({ children, config, planStore, syncStore, br
           void runAndroidSync("network").then(trackSyncResult).catch(() => { setSyncState("error"); setSyncError("Не удалось синхронизировать план"); });
         }
       });
+      stopPolling = startForegroundSyncPolling({
+        isActive: () => AppState.currentState === "active",
+        run: () => {
+          void runAndroidSync("foreground").then(trackSyncResult).catch(() => { setSyncState("error"); setSyncError("Не удалось синхронизировать план"); });
+        },
+      });
       setLoaded({ doc, draft }); setRevision((value) => value + 1); void registerBackgroundSync();
     });
-    return () => { cancelled = true; if (timer) clearTimeout(timer); if (widgetTimer) clearTimeout(widgetTimer); appState?.remove(); network?.(); configureAndroidSync(null); if (sync) void sync.stop(); if (doc) { doc.destroy(); resolvedPlanStore.detachDoc(doc); } };
+    return () => { cancelled = true; if (timer) clearTimeout(timer); if (widgetTimer) clearTimeout(widgetTimer); stopPolling?.(); appState?.remove(); network?.(); configureAndroidSync(null); if (sync) void sync.stop(); if (doc) { doc.destroy(); resolvedPlanStore.detachDoc(doc); } };
   }, [config.rootSecret, resolvedBridge, resolvedPlanStore, resolvedSyncStore, resolvedTransport]);
   const value = useMemo(() => {
     if (loaded === null) {

@@ -1,5 +1,7 @@
 import type { TaskSnapshot } from "@personal-plan/core";
+import { useRef } from "react";
 import { Pressable, Text, View } from "react-native";
+import { registerTap } from "./double-tap";
 import { styles } from "./styles";
 
 export function TaskRow({
@@ -23,9 +25,22 @@ export function TaskRow({
   deleteProgress?: number;
   onCancelDelete?(): void;
 }) {
-  const rowPress = pendingDelete
-    ? onCancelDelete
-    : onOpen;
+  const lastTapAt = useRef<number | null>(null);
+  const rowPress = () => {
+    if (pendingDelete) {
+      onCancelDelete?.();
+      return;
+    }
+    const nextTap = registerTap(lastTapAt.current, Date.now());
+    lastTapAt.current = nextTap.lastTapAt;
+    if (nextTap.activated) {
+      onOpen?.();
+    }
+  };
+  const longPress = () => {
+    lastTapAt.current = null;
+    onLongPress?.();
+  };
   return <View style={[styles.task, task.parentId === null ? undefined : styles.child, pendingDelete ? styles.taskPendingDelete : undefined]}>
     <Pressable
       accessibilityRole="checkbox"
@@ -44,7 +59,7 @@ export function TaskRow({
       accessibilityRole="button"
       style={styles.taskText}
       onPress={rowPress}
-      onLongPress={pendingDelete ? undefined : onLongPress}
+      onLongPress={pendingDelete || onLongPress === undefined ? undefined : longPress}
       delayLongPress={220}
     >
       <Text style={[styles.title, completed || pendingDelete ? styles.completed : undefined]}>{task.title}</Text>

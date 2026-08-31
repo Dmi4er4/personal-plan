@@ -162,4 +162,45 @@ describe("WebSyncProvider", () => {
     view.unmount();
     await stateStore.destroy();
   });
+
+  it("keeps polling after a hidden interval even when WebKit misses the visibility event", async () => {
+    const relay = new FakeRelay();
+    const rootSecret = new Uint8Array(32).fill(13);
+    const stateStore = new IndexedDbSyncStateStore(`web-sync-hidden-poll-${crypto.randomUUID()}`);
+    await stateStore.setActiveSecret({ rootSecret, relayUrl: "http://127.0.0.1:8787" });
+    let visibility: DocumentVisibilityState = "hidden";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+    const view = render(<App
+      store={new MemoryPlanStore()}
+      today={today}
+      sync={{ defaultRelayUrl: "http://127.0.0.1:8787", pollIntervalMs: 20, stateStore, transport: relay }}
+    />);
+    await screen.findByRole("tab", { name: "Список" });
+
+    const remoteDoc = createPlanDoc();
+    const remoteClient = new SyncClient({
+      provider: new WebCryptoProvider(),
+      material: await deriveVaultMaterial(new WebCryptoProvider(), rootSecret),
+      store: new MemorySyncStore(),
+      transport: relay,
+    });
+    remoteClient.start(remoteDoc);
+    addTask(remoteDoc, {
+      id: "remote-after-hidden-timer",
+      title: "Изменение после скрытого окна",
+      note: null,
+      bucket: { kind: "date", date: today() },
+      parentId: null,
+      order: 0,
+      now: "2026-08-04T10:00:00.000Z",
+    });
+    await remoteClient.stop();
+    await remoteClient.syncOnce(remoteDoc);
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    visibility = "visible";
+    expect(await screen.findByText("Изменение после скрытого окна")).toBeVisible();
+    view.unmount();
+    await stateStore.destroy();
+  });
 });

@@ -441,6 +441,57 @@ textarea {
   cursor: grabbing;
 }
 
+.task-editor {
+  display: grid;
+  gap: 0.375rem;
+  grid-column: 2 / 4;
+}
+
+.task-edit-input {
+  background: #fff;
+  border: 1px solid #bfc1cc;
+  border-radius: 0.45rem;
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 0.45rem 0.55rem;
+  width: 100%;
+}
+
+.task-edit-note {
+  color: #5e606a;
+  font-size: 0.8125rem;
+}
+
+.task-edit-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.task-edit-save,
+.task-edit-cancel {
+  border-radius: 0.45rem;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  padding: 0.4rem 0.6rem;
+}
+
+.task-edit-save {
+  background: #595ec7;
+  border: 1px solid #595ec7;
+  color: #fff;
+}
+
+.task-edit-cancel {
+  background: transparent;
+  border: 1px solid #bfc1cc;
+  color: #454651;
+}
+
+.task-edit-error {
+  color: #a52a2a;
+  font-size: 0.75rem;
+}
+
 .task-title {
   color: #25262d;
   font-size: 1rem;
@@ -471,6 +522,24 @@ textarea {
 
 .task-block--dragging {
   opacity: 0.55;
+}
+
+.completed-cut {
+  border-top: 1px solid #e0e1e7;
+  margin-top: 0.25rem;
+  padding-top: 0.25rem;
+}
+
+.completed-cut-summary {
+  color: #747580;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  padding: 0.45rem 0;
+  user-select: none;
+}
+
+.completed-cut:not([open]) > .task-block {
+  display: none;
 }
 
 .drag-overlay {
