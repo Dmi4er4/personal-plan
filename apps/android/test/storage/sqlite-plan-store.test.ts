@@ -57,10 +57,10 @@ describe("SQLite Yjs persistence", () => {
 
   it("compacts a large replay journal even below the 200-row limit", async () => {
     const source = new Y.Doc();
-    source.getMap("payload").set("bytes", new Uint8Array(600_000).fill(7));
+    source.getMap("payload").set("bytes", new Uint8Array(20_000).fill(7));
     const fullState = Y.encodeStateAsUpdate(source);
     const db = new FakeDatabase();
-    db.updates = [fullState, fullState, fullState];
+    db.updates = Array.from({ length: 60 }, () => fullState);
     const store = new SqlitePlanStore(Promise.resolve(db as never));
     const doc = await store.load();
 

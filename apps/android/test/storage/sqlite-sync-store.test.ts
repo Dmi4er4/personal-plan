@@ -87,7 +87,7 @@ describe("SQLite resume checkpoint", () => {
     const provider = new WebCryptoProvider();
     const material = await deriveVaultMaterial(provider, new Uint8Array(32).fill(33));
     const source = new Y.Doc();
-    source.getMap("payload").set("bytes", new Uint8Array(600_000).fill(9));
+    source.getMap("payload").set("bytes", new Uint8Array(20_000).fill(9));
     const fullState = Y.encodeStateAsUpdate(source);
     const envelopes: EncryptedEnvelope[] = [await encryptPayload(provider, material.encryptionKey, material.vaultId, { kind: "update", updateId: "22222222-2222-4222-8222-222222222222", payload: fullState, createdAt: "2026-10-26T11:00:00.000Z" })];
     let bootstraps = 0;
@@ -103,7 +103,8 @@ describe("SQLite resume checkpoint", () => {
     const make = (store: SqlitePlanStore) => new SyncClient({ provider, material, store: syncStore, transport, beforeCursorCommit: () => store.prepareCheckpoint(), checkpointContent: planCheckpointContent, checkpointBytes: (doc) => store.checkpointBytes(doc) });
     const firstStore = new SqlitePlanStore(Promise.resolve(db as never));
     await firstStore.initialize();
-    for (let i = 0; i < 3; i += 1) await db.runAsync("INSERT INTO y_updates(bytes) VALUES (?)", fullState);
+    // Exceed the byte threshold below 200 rows without an oversized live value.
+    for (let i = 0; i < 60; i += 1) await db.runAsync("INSERT INTO y_updates(bytes) VALUES (?)", fullState);
     const firstDoc = await firstStore.load();
     const first = make(firstStore);
     await reconcileAtStartup(first, firstDoc);
