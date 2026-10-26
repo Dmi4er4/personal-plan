@@ -135,7 +135,7 @@ describe("WebSyncProvider", () => {
       sync={{ defaultRelayUrl: "http://127.0.0.1:8787", pollIntervalMs: 20, stateStore, transport: relay }}
     />);
     await screen.findByRole("tab", { name: "Список" });
-    expect(relay.bootstrapCalls).toBe(1);
+    await waitFor(() => { expect(relay.bootstrapCalls).toBe(1); });
     await waitFor(() => { expect(relay.listCalls).toBeGreaterThan(0); });
 
     const remoteDoc = createPlanDoc();

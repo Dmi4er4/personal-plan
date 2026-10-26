@@ -1,4 +1,4 @@
-import { addTask, applyWidgetCompletionCommand, createPlanDoc, moveTask, snapshotPlan } from "../../src/index.js";
+import { addTask, applyWidgetCompletionCommand, applyWidgetCreateTaskCommand, createPlanDoc, moveTask, snapshotPlan } from "../../src/index.js";
 import { describe, expect, it, vi } from "vitest";
 
 const NOW = "2026-08-04T10:00:00.000Z";
@@ -67,5 +67,47 @@ describe("widget completion commands", () => {
       completedOn: "2026-08-04",
     })).toBe("applied");
     expect(snapshotPlan(doc).tasks.map(({ id }) => id)).toEqual(["target", "first", "last"]);
+  });
+});
+
+describe("widget create-task commands", () => {
+  it("creates a task at the head of Today exactly once", () => {
+    const doc = createPlanDoc();
+    addTask(doc, { id: "existing", title: "Существующее", note: null, bucket: { kind: "date", date: "2026-08-04" }, parentId: null, order: 0, now: NOW });
+    const updates = vi.fn();
+    doc.on("update", updates);
+    const command = {
+      id: "123e4567-e89b-42d3-a456-426614174020",
+      taskId: "123e4567-e89b-42d3-a456-426614174021",
+      title: "Из виджета",
+      createdAt: NOW,
+      createdOn: "2026-08-04" as const,
+    };
+
+    expect(applyWidgetCreateTaskCommand(doc, command)).toBe("applied");
+    expect(applyWidgetCreateTaskCommand(doc, command)).toBe("duplicate");
+
+    expect(snapshotPlan(doc).tasks.map(({ id, title, order }) => ({ id, title, order }))).toEqual([
+      { id: command.taskId, title: "Из виджета", order: 0 },
+      { id: "existing", title: "Существующее", order: 1 },
+    ]);
+    expect(updates).toHaveBeenCalledTimes(1);
+    expect(doc.getMap("appliedWidgetCommands").get(command.id)).toBe(NOW);
+  });
+
+  it("acknowledges a recovered command when its task already exists", () => {
+    const doc = createPlanDoc();
+    const command = {
+      id: "123e4567-e89b-42d3-a456-426614174022",
+      taskId: "123e4567-e89b-42d3-a456-426614174023",
+      title: "Уже сохранено",
+      createdAt: NOW,
+      createdOn: "2026-08-04" as const,
+    };
+    addTask(doc, { id: command.taskId, title: command.title, note: null, bucket: { kind: "date", date: command.createdOn }, parentId: null, order: 0, now: NOW });
+
+    expect(applyWidgetCreateTaskCommand(doc, command)).toBe("duplicate");
+    expect(snapshotPlan(doc).tasks).toHaveLength(1);
+    expect(doc.getMap("appliedWidgetCommands").get(command.id)).toBe(NOW);
   });
 });

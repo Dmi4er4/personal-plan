@@ -1,5 +1,5 @@
-import { repairInvalidTaskOrders } from "@personal-plan/core";
-import { base64UrlDecode, base64UrlEncode, createPairingQr, deriveVaultMaterial, generateRootSecret, parsePairingQr, phraseToRootSecret, rootSecretToPhrase, SyncClient, SyncIntegrityError, WebCryptoProvider, type RelayTransport, type VaultMaterial } from "@personal-plan/sync";
+import { planCheckpointContent, repairInvalidTaskOrders } from "@personal-plan/core";
+import { base64UrlDecode, base64UrlEncode, createPairingQr, deriveVaultMaterial, generateRootSecret, parsePairingQr, phraseToRootSecret, reconcileAtStartup, rootSecretToPhrase, SyncClient, SyncIntegrityError, WebCryptoProvider, type RelayTransport, type VaultMaterial } from "@personal-plan/sync";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { IndexedDbSyncStateStore, type StoredSyncSecret } from "../storage/sync-indexeddb.js";
@@ -58,14 +58,13 @@ function errorCode(reason: unknown): string {
 }
 
 export function WebSyncProvider({ children, options }: WebSyncProviderProps) {
-  const { doc } = usePlan();
+  const { doc, flushPersistence, checkpointBytes } = usePlan();
   const provider = useMemo(() => new WebCryptoProvider(), []);
   const [secret, setSecret] = useState<StoredSyncSecret | null>(null);
   const [ready, setReady] = useState(options === undefined);
   const [material, setMaterial] = useState<VaultMaterial | null>(null);
   const [state, setState] = useState<SyncUiState>({ kind: "local-only" });
   const [creationRecovery, setCreationRecovery] = useState<CreationRecovery | null>(null);
-  const nextMode = useRef<"normal" | "seed" | "bootstrap">("normal");
   const clientRef = useRef<SyncClient | null>(null);
   const syncRef = useRef<(() => Promise<void>) | null>(null);
 
@@ -102,16 +101,22 @@ export function WebSyncProvider({ children, options }: WebSyncProviderProps) {
     let timer: number | null = null;
     let pollTimer: number | null = null;
     let inFlight: Promise<void> | null = null;
+    let initialized = false;
+    let initialization: Promise<void> | null = null;
     const client = new SyncClient({
       provider,
       material,
       store: options.stateStore,
       transport: options.transportForRelay?.(secret.relayUrl) ?? options.transport,
+      beforeCursorCommit: () => flushPersistence(),
+      checkpointContent: planCheckpointContent,
+      checkpointBytes,
       onEnqueued: () => {
         if (!active) return;
         void options.stateStore.listOutbox(material.vaultId, 1000).then((items) => {
           if (active) setState({ kind: navigator.onLine ? "pending" : "offline", count: items.length });
         });
+        if (!initialized) return;
         if (timer !== null) window.clearTimeout(timer);
         timer = window.setTimeout(() => { requestSync(); }, 500);
       },
@@ -119,6 +124,12 @@ export function WebSyncProvider({ children, options }: WebSyncProviderProps) {
     clientRef.current = client;
     const repairOrders = (): void => {
       repairInvalidTaskOrders(doc);
+    };
+    const setFailureState = async (reason: unknown): Promise<void> => {
+      if (!active) return;
+      const pending = await options.stateStore.listOutbox(material.vaultId, 1000).then((items) => items.length).catch(() => 0);
+      if (!navigator.onLine || reason instanceof TypeError) setState({ kind: "offline", count: pending });
+      else setState({ kind: "error", code: errorCode(reason) });
     };
 
     const performSync = async (): Promise<void> => {
@@ -129,11 +140,7 @@ export function WebSyncProvider({ children, options }: WebSyncProviderProps) {
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cleanup may set active during await
         if (active) setState(result.status === "synced" ? { kind: "synced", at: new Date().toISOString() } : { kind: "pending", count: 1 });
       } catch (reason) {
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cleanup may set active during await
-        if (!active) return;
-        const pending = await options.stateStore.listOutbox(material.vaultId, 1000).then((items) => items.length).catch(() => 0);
-        if (!navigator.onLine || reason instanceof TypeError) setState({ kind: "offline", count: pending });
-        else setState({ kind: "error", code: errorCode(reason) });
+        await setFailureState(reason);
       }
     };
     const runSync = (): Promise<void> => {
@@ -154,6 +161,12 @@ export function WebSyncProvider({ children, options }: WebSyncProviderProps) {
       }, Math.max(1, options.pollIntervalMs ?? 5_000));
     };
     const requestSync = (): void => {
+      if (!initialized) {
+        void runInitialization().catch((reason: unknown) => {
+          void setFailureState(reason);
+        });
+        return;
+      }
       if (pollTimer !== null) {
         window.clearTimeout(pollTimer);
         pollTimer = null;
@@ -163,23 +176,19 @@ export function WebSyncProvider({ children, options }: WebSyncProviderProps) {
     syncRef.current = runSync;
 
     const initialize = async (): Promise<void> => {
-      const mode = nextMode.current;
-      nextMode.current = "normal";
-      if (mode === "bootstrap" || (mode === "normal" && doc.getMap("tasks").size === 0)) {
-        setState({ kind: "syncing" });
-        await client.bootstrapInto(doc);
-      } else {
-        client.start(doc);
-      }
       doc.on("update", repairOrders);
       repairInvalidTaskOrders(doc);
-      if (mode === "seed") {
-        await client.enqueueCurrentState(doc);
-      }
-      await runSync();
+      setState({ kind: "syncing" });
+      const result = await reconcileAtStartup(client, doc);
+      initialized = true;
+      if (active) setState(result.status === "synced" ? { kind: "synced", at: new Date().toISOString() } : { kind: "pending", count: 1 });
       schedulePoll();
     };
-    void initialize().catch((reason: unknown) => { if (active) setState({ kind: "error", code: errorCode(reason) }); });
+    const runInitialization = (): Promise<void> => {
+      initialization ??= initialize().finally(() => { initialization = null; });
+      return initialization;
+    };
+    void runInitialization().catch((reason: unknown) => { void setFailureState(reason); });
 
     const online = (): void => { requestSync(); };
     const focus = (): void => { requestSync(); };
@@ -201,11 +210,10 @@ export function WebSyncProvider({ children, options }: WebSyncProviderProps) {
       clientRef.current = null;
       void client.stop();
     };
-  }, [doc, material, options, provider, secret]);
+  }, [checkpointBytes, doc, flushPersistence, material, options, provider, secret]);
 
-  const activate = useCallback(async (stored: StoredSyncSecret, mode: "normal" | "seed" | "bootstrap", recoveryAcknowledged = true) => {
+  const activate = useCallback(async (stored: StoredSyncSecret, recoveryAcknowledged = true) => {
     if (options === undefined) throw new Error("Synchronization is disabled");
-    nextMode.current = mode;
     await options.stateStore.setActiveSecret(stored, recoveryAcknowledged);
     setSecret(stored);
     setMaterial(await deriveVaultMaterial(provider, stored.rootSecret));
@@ -222,18 +230,21 @@ export function WebSyncProvider({ children, options }: WebSyncProviderProps) {
       material: nextMaterial,
       store: options.stateStore,
       transport: options.transportForRelay?.(stored.relayUrl) ?? options.transport,
+      beforeCursorCommit: () => flushPersistence(),
+      checkpointContent: planCheckpointContent,
+      checkpointBytes,
     });
     setState({ kind: "syncing" });
     try {
       await client.bootstrapInto(doc);
       await client.stop();
-      await activate(stored, "normal");
+      await activate(stored);
     } catch (reason) {
       await client.stop().catch(() => undefined);
       setState({ kind: "error", code: errorCode(reason) });
       throw reason;
     }
-  }, [activate, doc, material, options, provider]);
+  }, [activate, checkpointBytes, doc, flushPersistence, material, options, provider]);
 
   const createVault = useCallback(async () => {
     if (options === undefined) throw new Error("Synchronization is disabled");
@@ -241,7 +252,7 @@ export function WebSyncProvider({ children, options }: WebSyncProviderProps) {
     const nextMaterial = await deriveVaultMaterial(provider, rootSecret);
     const verifier = base64UrlEncode(await provider.sha256(nextMaterial.authToken));
     await (options.transportForRelay?.(options.defaultRelayUrl) ?? options.transport).createVault(nextMaterial.vaultId, verifier);
-    await activate({ rootSecret, relayUrl: options.defaultRelayUrl }, "seed", false);
+    await activate({ rootSecret, relayUrl: options.defaultRelayUrl }, false);
     setCreationRecovery({
       phrase: rootSecretToPhrase(rootSecret),
       qr: createPairingQr(options.defaultRelayUrl, rootSecret),

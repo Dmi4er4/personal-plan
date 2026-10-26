@@ -8,6 +8,8 @@ import { DatabaseSync } from "node:sqlite";
 const MAX_BODY_BYTES = 2_000_000;
 const MAX_ENVELOPE_BYTES = 1_048_576;
 const UPDATE_PAGE_SIZE = 500;
+const MAX_PAGE_BYTES = 1_500_000;
+const responseBodyBytes = new WeakMap();
 
 function base64UrlDecode(value) {
   if (typeof value !== "string" || !/^[A-Za-z0-9_-]*$/u.test(value)) throw new TypeError("invalid_base64url");
@@ -43,9 +45,11 @@ function validEnvelope(value, vaultId, expectedKind) {
 
 function json(response, value, status = 200) {
   const body = JSON.stringify(value);
+  const bytes = Buffer.byteLength(body);
+  responseBodyBytes.set(response, bytes);
   response.writeHead(status, {
     "cache-control": "no-store",
-    "content-length": Buffer.byteLength(body),
+    "content-length": bytes,
     "content-type": "application/json; charset=utf-8",
     "x-content-type-options": "nosniff",
   });
@@ -221,6 +225,27 @@ function envelopeFromRow(vaultId, row, kind = "update") {
   return { version: 1, kind, vaultId, updateId: row.update_id, nonce: row.nonce, ciphertext: row.ciphertext, createdAt: row.created_at };
 }
 
+function readUpdatePage(database, vaultId, after, snapshot = null) {
+  const rows = database.prepare("SELECT cursor, update_id, nonce, ciphertext, created_at FROM updates WHERE vault_id = ? AND cursor > ? ORDER BY cursor LIMIT ?").iterate(vaultId, after, UPDATE_PAGE_SIZE + 1);
+  const updates = [];
+  let bytes = 512 + Buffer.byteLength(JSON.stringify(snapshot));
+  let hasMore = false;
+  for (const row of rows) {
+    const stored = { cursor: row.cursor, envelope: envelopeFromRow(vaultId, row) };
+    const size = Buffer.byteLength(JSON.stringify(stored)) + 1;
+    // A snapshot may fill the first page by itself. A subsequent list page
+    // must always include at least one record so even old oversized metadata
+    // cannot prevent forward progress.
+    if (updates.length === UPDATE_PAGE_SIZE || (bytes + size > MAX_PAGE_BYTES && (snapshot !== null || updates.length > 0))) {
+      hasMore = true;
+      break;
+    }
+    updates.push(stored);
+    bytes += size;
+  }
+  return { updates, nextCursor: updates.at(-1)?.cursor ?? after, hasMore };
+}
+
 function appendUpdates(database, vaultId, updates) {
   const accepted = [];
   database.exec("BEGIN IMMEDIATE");
@@ -304,6 +329,21 @@ async function handleApi(database, request, response, url) {
       return { route: "list", vaultId };
     }
     const after = Number(rawAfter);
+    if (url.searchParams.get("paged") === "1") {
+      const anchorUpdateId = database.prepare("SELECT update_id FROM updates WHERE vault_id = ? AND cursor = ?").get(vaultId, after)?.update_id ?? null;
+      if (url.searchParams.get("resume") === "1") {
+        const snapshot = database.prepare("SELECT cursor,LENGTH(ciphertext) AS bytes FROM snapshots WHERE vault_id = ? AND cursor > ?").get(vaultId, after);
+        if (snapshot !== undefined) {
+          const backlog = database.prepare("SELECT COALESCE(SUM(LENGTH(ciphertext)),0) AS bytes FROM updates WHERE vault_id = ? AND cursor > ? AND cursor <= ?").get(vaultId, after, snapshot.cursor);
+          if (backlog.bytes > snapshot.bytes) {
+            json(response, { updates: [], nextCursor: after, hasMore: false, anchorUpdateId, bootstrapRequired: true });
+            return { route: "list", vaultId };
+          }
+        }
+      }
+      json(response, { ...readUpdatePage(database, vaultId, after), anchorUpdateId });
+      return { route: "list", vaultId };
+    }
     const rows = database.prepare("SELECT cursor, update_id, nonce, ciphertext, created_at FROM updates WHERE vault_id = ? AND cursor > ? ORDER BY cursor LIMIT ?").all(vaultId, after, UPDATE_PAGE_SIZE);
     json(response, { updates: rows.map((row) => ({ cursor: row.cursor, envelope: envelopeFromRow(vaultId, row) })), nextCursor: rows.at(-1)?.cursor ?? after });
     return { route: "list", vaultId };
@@ -332,6 +372,11 @@ async function handleApi(database, request, response, url) {
   if (request.method === "GET" && match[2] === "bootstrap") {
     const snapshot = database.prepare("SELECT cursor, update_id, nonce, ciphertext, created_at FROM snapshots WHERE vault_id = ?").get(vaultId);
     const after = snapshot?.cursor ?? 0;
+    if (url.searchParams.get("paged") === "1") {
+      const storedSnapshot = snapshot === undefined ? null : { cursor: snapshot.cursor, envelope: envelopeFromRow(vaultId, snapshot, "snapshot") };
+      json(response, { snapshot: storedSnapshot, ...readUpdatePage(database, vaultId, after, storedSnapshot) });
+      return { route: "bootstrap", vaultId };
+    }
     const rows = database.prepare("SELECT cursor, update_id, nonce, ciphertext, created_at FROM updates WHERE vault_id = ? AND cursor > ? ORDER BY cursor").all(vaultId, after);
     const maximum = Number(database.prepare("SELECT COALESCE(MAX(cursor), 0) AS cursor FROM updates WHERE vault_id = ?").get(vaultId).cursor);
     json(response, {
@@ -423,7 +468,10 @@ export function createRelayServer({ databasePath, legacyDirectory, staticDirecto
       if (!response.headersSent) apiError(response, code, status);
       else response.destroy();
     } finally {
-      console.log(JSON.stringify({ at: new Date().toISOString(), durationMs: Date.now() - started, method: request.method, route: diagnostic.route, status: response.statusCode, vault: vaultFingerprint(diagnostic.vaultId) }));
+      const declaredBytes = Number(request.headers["content-length"] ?? 0);
+      const resumeHeader = request.headers["x-personal-plan-resume"];
+      const resume = typeof resumeHeader === "string" && ["missing", "read_failed", "cursor_mismatch", "fingerprint_mismatch", "state_vector_mismatch", "deletions_mismatch", "encoding_mismatch", "verified", "saved", "save_failed"].includes(resumeHeader) ? resumeHeader : undefined;
+      console.log(JSON.stringify({ at: new Date().toISOString(), durationMs: Date.now() - started, method: request.method, route: diagnostic.route, status: response.statusCode, vault: vaultFingerprint(diagnostic.vaultId), responseBytes: response.statusCode === 204 ? 0 : responseBodyBytes.get(response), declaredRequestBytes: Number.isSafeInteger(declaredBytes) && declaredBytes >= 0 ? declaredBytes : undefined, resume }));
     }
   });
   return {

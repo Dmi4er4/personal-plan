@@ -1,4 +1,4 @@
-import { isLocalDate, projectPlan, snapshotPlan, type LocalDate } from "@personal-plan/core";
+import { getPlanDate, isLocalDate, planCheckpointContent, projectPlan, snapshotPlan, startPlanDayClock, type LocalDate } from "@personal-plan/core";
 import { deriveVaultMaterial, SyncClient, type RelayTransport } from "@personal-plan/sync";
 import NetInfo from "@react-native-community/netinfo";
 import Constants from "expo-constants";
@@ -22,8 +22,7 @@ function today(): LocalDate {
   if (isLocalDate(qaToday)) {
     return qaToday;
   }
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` as LocalDate;
+  return getPlanDate();
 }
 export interface AndroidPlanContext { doc: Y.Doc; today: LocalDate; projected: ReturnType<typeof projectPlan>; draft: string | null; rootSecret: Uint8Array; relayUrl: string; syncError: string | null; syncState: WidgetSnapshot["syncState"]; saveDraft(value: string): Promise<void>; clearDraft(): Promise<void>; restoreFromServer(): Promise<void>; disconnectVault(): Promise<void> }
 const Context = createContext<AndroidPlanContext | null>(null);
@@ -43,9 +42,10 @@ export function AndroidPlanProvider({ children, config, planStore, syncStore, br
   const resolvedBridge = bridge ?? PlanWidget;
   const resolvedTransport = useMemo(() => transport ?? new AndroidHttpRelayTransport(config.relayUrl), [config.relayUrl, transport]);
   const [loaded, setLoaded] = useState<{ doc: Y.Doc; draft: string | null } | null>(null); const [revision, setRevision] = useState(0); const [syncError, setSyncError] = useState<string | null>(null); const [syncState, setSyncState] = useState<WidgetSnapshot["syncState"]>("pending");
-  useEffect(() => { let cancelled = false; let doc: Y.Doc | null = null; let sync: SyncClient | null = null; let timer: ReturnType<typeof setTimeout> | null = null; let widgetTimer: ReturnType<typeof setTimeout> | null = null; let appState: { remove(): void } | null = null; let network: (() => void) | null = null; let stopPolling: (() => void) | null = null;
+  const [localToday, setLocalToday] = useState(today);
+  useEffect(() => { let cancelled = false; let doc: Y.Doc | null = null; let sync: SyncClient | null = null; let timer: ReturnType<typeof setTimeout> | null = null; let widgetTimer: ReturnType<typeof setTimeout> | null = null; let appState: { remove(): void } | null = null; let network: (() => void) | null = null; let stopPolling: (() => void) | null = null; let dayClock: ReturnType<typeof startPlanDayClock> | null = null;
     void Promise.all([resolvedPlanStore.load(), resolvedPlanStore.loadDraft(), deriveVaultMaterial(new ExpoCryptoProvider(), config.rootSecret)]).then(async ([nextDoc, draft, material]) => {
-      if (cancelled) return; doc = nextDoc; sync = new SyncClient({ provider: new ExpoCryptoProvider(), material, store: resolvedSyncStore, transport: resolvedTransport });
+      if (cancelled) return; doc = nextDoc; sync = new SyncClient({ provider: new ExpoCryptoProvider(), material, store: resolvedSyncStore, transport: resolvedTransport, beforeCursorCommit: () => resolvedPlanStore.prepareCheckpoint(), checkpointContent: planCheckpointContent, checkpointBytes: (value) => resolvedPlanStore.checkpointBytes(value) });
       configureAndroidSync({ doc, planStore: resolvedPlanStore, syncClient: sync, bridge: resolvedBridge, today, isOnline: async () => (await NetInfo.fetch()).isConnected === true });
       let widgetStatus: WidgetSnapshot["syncState"] = "pending";
       const trackSyncResult = (result: { widgetStatus: WidgetSnapshot["syncState"]; error: string | null }) => {
@@ -81,6 +81,13 @@ export function AndroidPlanProvider({ children, config, planStore, syncStore, br
         timer = setTimeout(() => { void runAndroidSync("foreground").then(trackSyncResult).catch(() => { setSyncState("error"); setSyncError("Не удалось синхронизировать план"); }); }, 500);
       };
       doc.on("update", refresh);
+      dayClock = startPlanDayClock((date) => {
+        setLocalToday(date);
+        refreshWidget();
+      }, { today });
+      // Local state is ready at this point. Do not keep the editor behind a
+      // network request: startup sync may finish later or fail independently.
+      setLoaded({ doc, draft }); setRevision((value) => value + 1);
       try {
         const result = await runAndroidSync("startup");
         trackSyncResult(result);
@@ -92,6 +99,7 @@ export function AndroidPlanProvider({ children, config, planStore, syncStore, br
       if (cancelled) return;
       appState = AppState.addEventListener("change", (state) => {
         if (state === "active") {
+          dayClock?.refresh();
           void runAndroidSync("foreground").then(trackSyncResult).catch(() => { setSyncState("error"); setSyncError("Не удалось синхронизировать план"); });
         }
       });
@@ -106,19 +114,22 @@ export function AndroidPlanProvider({ children, config, planStore, syncStore, br
           void runAndroidSync("foreground").then(trackSyncResult).catch(() => { setSyncState("error"); setSyncError("Не удалось синхронизировать план"); });
         },
       });
-      setLoaded({ doc, draft }); setRevision((value) => value + 1); void registerBackgroundSync();
+      void registerBackgroundSync();
     });
-    return () => { cancelled = true; if (timer) clearTimeout(timer); if (widgetTimer) clearTimeout(widgetTimer); stopPolling?.(); appState?.remove(); network?.(); configureAndroidSync(null); if (sync) void sync.stop(); if (doc) { doc.destroy(); resolvedPlanStore.detachDoc(doc); } };
+    return () => { cancelled = true; if (timer) clearTimeout(timer); if (widgetTimer) clearTimeout(widgetTimer); dayClock?.stop(); stopPolling?.(); appState?.remove(); network?.(); configureAndroidSync(null); if (sync) void sync.stop(); if (doc) { doc.destroy(); resolvedPlanStore.detachDoc(doc); } };
   }, [config.rootSecret, resolvedBridge, resolvedPlanStore, resolvedSyncStore, resolvedTransport]);
+  const loadedDoc = loaded?.doc ?? null;
+  const projected = useMemo(() => {
+    if (loadedDoc === null) return null;
+    const snapshot = snapshotPlan(loadedDoc);
+    return projectPlan(snapshot.tasks, localToday, snapshot.records);
+  }, [loadedDoc, localToday, revision]);
   const value = useMemo(() => {
-    if (loaded === null) {
-      return null;
-    }
-    const snapshot = snapshotPlan(loaded.doc);
+    if (loaded === null || projected === null) return null;
     return {
       doc: loaded.doc,
-      today: today(),
-      projected: projectPlan(snapshot.tasks, today(), snapshot.records),
+      today: localToday,
+      projected,
       draft: loaded.draft,
       rootSecret: config.rootSecret,
       relayUrl: config.relayUrl,
@@ -145,7 +156,7 @@ export function AndroidPlanProvider({ children, config, planStore, syncStore, br
         await onDisconnect();
       },
     };
-  }, [config.relayUrl, config.rootSecret, loaded, onDisconnect, onRestoreFromServer, resolvedPlanStore, revision, syncError, syncState]);
+  }, [config.relayUrl, config.rootSecret, loaded, localToday, onDisconnect, onRestoreFromServer, projected, resolvedPlanStore, syncError, syncState]);
   return value === null ? <Text>Загрузка локального плана…</Text> : <Context.Provider value={value}>{children}</Context.Provider>;
 }
 export function useAndroidPlan(): AndroidPlanContext { const value = useContext(Context); if (value === null) throw new Error("useAndroidPlan outside provider"); return value; }

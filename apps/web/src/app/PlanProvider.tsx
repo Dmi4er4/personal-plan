@@ -1,7 +1,9 @@
 import {
+  getPlanDate,
   pruneExpiredHistory,
   projectPlan,
   snapshotPlan,
+  startPlanDayClock,
   type LocalDate,
 } from "@personal-plan/core";
 import {
@@ -31,6 +33,8 @@ export interface PlanContextValue {
   clearDraft(): Promise<void>;
   persistence: PersistenceState;
   retryPersistence(): Promise<void>;
+  flushPersistence: () => Promise<void>;
+  checkpointBytes?: ((doc: Y.Doc) => Promise<Uint8Array | null>) | undefined;
 }
 
 export interface PlanProviderProps {
@@ -47,29 +51,8 @@ interface LoadedPlan {
 
 const PlanContext = createContext<PlanContextValue | null>(null);
 
-function isLocalDate(value: string): value is LocalDate {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value);
-}
-
 function systemClock(): Date {
   return new Date();
-}
-
-function currentLocalDate(now: Date): LocalDate {
-  const year = String(now.getFullYear());
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  const value = `${year}-${month}-${day}`;
-  if (!isLocalDate(value)) {
-    throw new Error("Could not determine the current local date");
-  }
-  return value;
-}
-
-function millisecondsUntilNextLocalMidnight(now: Date): number {
-  const midnight = new Date(now.getTime());
-  midnight.setHours(24, 0, 0, 0);
-  return Math.max(1, midnight.getTime() - now.getTime());
 }
 
 export function PlanProvider({
@@ -79,7 +62,7 @@ export function PlanProvider({
   today,
 }: PlanProviderProps) {
   const todayProvider = useMemo(
-    () => today ?? (() => currentLocalDate(clock())),
+    () => today ?? (() => getPlanDate(clock())),
     [clock, today],
   );
   const [localToday, setLocalToday] = useState<LocalDate>(() => todayProvider());
@@ -99,38 +82,18 @@ export function PlanProvider({
   );
 
   useEffect(() => {
-    let timer: number | null = null;
-
-    const refreshToday = (): void => {
-      const nextToday = todayProvider();
-      setLocalToday((current) => (current === nextToday ? current : nextToday));
-    };
-    const scheduleMidnight = (): void => {
-      if (timer !== null) {
-        window.clearTimeout(timer);
-      }
-      timer = window.setTimeout(() => {
-        refreshToday();
-        scheduleMidnight();
-      }, millisecondsUntilNextLocalMidnight(clock()));
-    };
-    const resume = (): void => {
-      refreshToday();
-      scheduleMidnight();
-    };
+    const dayClock = startPlanDayClock(setLocalToday, { clock, today: todayProvider });
+    const resume = dayClock.refresh;
     const visibilityResume = (): void => {
       if (document.visibilityState === "visible") {
         resume();
       }
     };
 
-    scheduleMidnight();
     window.addEventListener("focus", resume);
     document.addEventListener("visibilitychange", visibilityResume);
     return () => {
-      if (timer !== null) {
-        window.clearTimeout(timer);
-      }
+      dayClock.stop();
       window.removeEventListener("focus", resume);
       document.removeEventListener("visibilitychange", visibilityResume);
     };
@@ -201,6 +164,12 @@ export function PlanProvider({
     [store],
   );
 
+  const flushPersistence = useCallback(
+    async (): Promise<void> => store.flush?.(),
+    [store],
+  );
+  const checkpointBytes = useMemo(() => store.checkpointBytes === undefined ? undefined : (doc: Y.Doc) => store.checkpointBytes?.(doc) ?? Promise.resolve(null), [store]);
+
   const value = useMemo<PlanContextValue | null>(() => {
     if (loaded === null) {
       return null;
@@ -216,8 +185,10 @@ export function PlanProvider({
       clearDraft,
       persistence,
       retryPersistence,
+      flushPersistence,
+      checkpointBytes,
     };
-  }, [clearDraft, loaded, localToday, persistence, retryPersistence, revision, setDraft]);
+  }, [checkpointBytes, clearDraft, flushPersistence, loaded, localToday, persistence, retryPersistence, revision, setDraft]);
 
   if (error !== null) {
     return <p role="alert">Не удалось открыть локальный план: {error.message}</p>;

@@ -6,14 +6,14 @@ const qaToday = process.env.PERSONAL_PLAN_QA_TODAY;
 const config: ExpoConfig = {
   name: "Планы",
   slug: "personal-plan",
-  version: "1.0.11",
+  version: "1.0.22",
   orientation: "portrait",
   scheme: "personalplan",
-  userInterfaceStyle: "automatic",
+  backgroundColor: "#f7f7fb",
   icon: "./assets/icon.png",
   android: {
     package: androidPackage,
-    versionCode: 12,
+    versionCode: 23,
     adaptiveIcon: { foregroundImage: "./assets/adaptive-icon.png", backgroundColor: "#ffffff" },
     intentFilters: [
       {
@@ -29,6 +29,7 @@ const config: ExpoConfig = {
   },
   plugins: [
     "./plugins/with-on-new-intent.js",
+    "./plugins/with-light-system-bars.js",
     ["expo-build-properties", { android: { minSdkVersion: 24, compileSdkVersion: 36, targetSdkVersion: 36 } }],
     ["expo-secure-store", { configureAndroidBackup: true }],
     ["expo-camera", { cameraPermission: "Разрешите камеру, чтобы отсканировать QR-код хранилища", recordAudioAndroid: false }],

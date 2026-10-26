@@ -1,5 +1,6 @@
 import type { LocalDate } from "@personal-plan/core";
 import type { SyncClientApi } from "@personal-plan/sync";
+import type * as Y from "yjs";
 import type { StoredVaultConfig } from "../storage/secure-vault";
 import type { SqlitePlanStore } from "../storage/sqlite-plan-store";
 import type { WidgetBridge } from "../widget/contracts";
@@ -8,7 +9,7 @@ import { runAndroidSyncWithDependencies, type AndroidSyncResult } from "./androi
 export interface HeadlessAndroidSyncRuntime {
   loadVault(): Promise<StoredVaultConfig | null>;
   createPlanStore(): SqlitePlanStore;
-  createSyncClient(config: StoredVaultConfig): Promise<SyncClientApi>;
+  createSyncClient(config: StoredVaultConfig, beforeCursorCommit: () => Promise<void>, checkpointBytes?: (doc: Y.Doc) => Promise<Uint8Array | null>): Promise<SyncClientApi>;
   bridge: WidgetBridge;
   today(): LocalDate;
   isOnline(): Promise<boolean>;
@@ -27,7 +28,7 @@ export async function runHeadlessAndroidSync(runtime: HeadlessAndroidSyncRuntime
   const doc = await planStore.load();
   let syncClient: SyncClientApi | null = null;
   try {
-    syncClient = await runtime.createSyncClient(config);
+    syncClient = await runtime.createSyncClient(config, () => planStore.prepareCheckpoint(), (value) => planStore.checkpointBytes(value));
     return await runAndroidSyncWithDependencies("background", {
       doc,
       planStore,

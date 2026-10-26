@@ -35,13 +35,13 @@ export class HttpRelayTransport implements RelayTransport {
   append(vaultId: string, authToken: string, updates: EncryptedEnvelope[]): Promise<AppendUpdatesResponse> {
     return this.#request(`/v1/vaults/${encodeURIComponent(vaultId)}/updates`, { method: "POST", headers: { authorization: `Bearer ${authToken}` }, body: JSON.stringify({ updates }) });
   }
-  list(vaultId: string, authToken: string, after: number): Promise<ListUpdatesResponse> {
-    return this.#request(`/v1/vaults/${encodeURIComponent(vaultId)}/updates?after=${String(after)}`, { headers: { authorization: `Bearer ${authToken}` } });
+  list(vaultId: string, authToken: string, after: number, allowBootstrap = true): Promise<ListUpdatesResponse> {
+    return this.#request(`/v1/vaults/${encodeURIComponent(vaultId)}/updates?after=${String(after)}&paged=1&resume=${allowBootstrap ? "1" : "0"}`, { headers: { authorization: `Bearer ${authToken}` } });
   }
   async putSnapshot(vaultId: string, authToken: string, request: PutSnapshotRequest): Promise<void> {
     await this.#request(`/v1/vaults/${encodeURIComponent(vaultId)}/snapshot`, { method: "PUT", headers: { authorization: `Bearer ${authToken}` }, body: JSON.stringify(request) });
   }
   bootstrap(vaultId: string, authToken: string): Promise<BootstrapResponse> {
-    return this.#request(`/v1/vaults/${encodeURIComponent(vaultId)}/bootstrap`, { headers: { authorization: `Bearer ${authToken}` } });
+    return this.#request(`/v1/vaults/${encodeURIComponent(vaultId)}/bootstrap?paged=1`, { headers: { authorization: `Bearer ${authToken}` } });
   }
 }

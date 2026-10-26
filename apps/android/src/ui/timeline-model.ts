@@ -64,9 +64,16 @@ export function incompleteBlockIdsForBucket(
 }
 
 export function taskBlocks(tasks: ProjectedTask[]): TaskBlock[] {
+  const childrenByParent = new Map<string, ProjectedTask[]>();
+  for (const task of tasks) {
+    if (task.parentId === null) continue;
+    const children = childrenByParent.get(task.parentId) ?? [];
+    children.push(task);
+    childrenByParent.set(task.parentId, children);
+  }
   return tasks.filter((task) => task.parentId === null).map((parent) => ({
     parent,
-    tasks: [parent, ...tasks.filter((task) => task.parentId === parent.id)],
+    tasks: [parent, ...(childrenByParent.get(parent.id) ?? [])],
   }));
 }
 

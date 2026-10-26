@@ -17,6 +17,63 @@ describe("widget command timestamps", () => {
   });
 });
 
+describe("widget quick-add commands", () => {
+  it("creates and acknowledges a trimmed Today task exactly once", async () => {
+    const doc = createPlanDoc();
+    const command = JSON.stringify({
+      version: 1,
+      kind: "create",
+      id: "123e4567-e89b-42d3-a456-426614174020",
+      taskId: "123e4567-e89b-42d3-a456-426614174021",
+      title: "  Купить молоко  ",
+      createdAt: "2026-08-05T11:21:33.123456789Z",
+      createdOn: "2026-08-05",
+    });
+    const bridge = {
+      readCommands: vi.fn(async () => [command, command]),
+      acknowledgeCommands: vi.fn(async () => undefined),
+      writeSnapshot: vi.fn(async () => undefined),
+      requestRefresh: vi.fn(async () => undefined),
+    };
+
+    expect(await processWidgetCommands(doc, bridge, "2026-08-05")).toBe(2);
+    expect(snapshotPlan(doc).tasks).toMatchObject([{
+      id: "123e4567-e89b-42d3-a456-426614174021",
+      title: "Купить молоко",
+      bucket: { kind: "date", date: "2026-08-05" },
+      createdAt: "2026-08-05T11:21:33.123Z",
+    }]);
+    expect(doc.getMap("appliedWidgetCommands").size).toBe(1);
+    expect(bridge.acknowledgeCommands).toHaveBeenCalledWith([
+      "123e4567-e89b-42d3-a456-426614174020",
+      "123e4567-e89b-42d3-a456-426614174020",
+    ]);
+  });
+
+  it("keeps malformed create commands queued", async () => {
+    const doc = createPlanDoc();
+    const invalid = JSON.stringify({
+      version: 1,
+      kind: "create",
+      id: "123e4567-e89b-42d3-a456-426614174020",
+      taskId: "task",
+      title: "   ",
+      createdAt: "2026-08-05T11:21:33.123Z",
+      createdOn: "2026-08-05",
+    });
+    const bridge = {
+      readCommands: vi.fn(async () => [invalid]),
+      acknowledgeCommands: vi.fn(async () => undefined),
+      writeSnapshot: vi.fn(async () => undefined),
+      requestRefresh: vi.fn(async () => undefined),
+    };
+
+    expect(await processWidgetCommands(doc, bridge, "2026-08-05")).toBe(0);
+    expect(snapshotPlan(doc).tasks).toEqual([]);
+    expect(bridge.acknowledgeCommands).not.toHaveBeenCalled();
+  });
+});
+
 describe("widget refresh bridge", () => {
   it("uses one native call when atomic snapshot refresh is available", async () => {
     const doc = createPlanDoc();

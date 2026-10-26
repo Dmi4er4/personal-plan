@@ -5,6 +5,14 @@ async function addTask(page: Page, title: string): Promise<void> {
   const input = page.getByRole("textbox", { name: "Название нового дела" });
   await input.fill(title);
   await input.press("Enter");
+  await expect(page.getByText(title, { exact: true })).toBeVisible();
+}
+
+async function expectSyncStatus(page: Page, status: string | RegExp): Promise<void> {
+  await page.getByRole("button", { name: "Меню" }).click();
+  await page.getByRole("menuitem", { name: "Настройки" }).click();
+  await expect(page.getByLabel("Состояние синхронизации")).toHaveText(status);
+  await page.getByRole("button", { name: "← Назад" }).click();
 }
 
 async function canonicalText(page: Page): Promise<string> {
@@ -13,7 +21,7 @@ async function canonicalText(page: Page): Promise<string> {
 }
 
 async function blockRelay(context: BrowserContext): Promise<void> {
-  await context.route("**/v1/**", (route) => route.abort("internetdisconnected"));
+  await context.setOffline(true);
 }
 
 test("pairs two profiles, edits offline, converges, and persists", async ({ playwright }, testInfo) => {
@@ -25,21 +33,25 @@ test("pairs two profiles, edits offline, converges, and persists", async ({ play
   let pageB = await contextB.newPage();
 
   await pageA.goto("/?e2e=1");
-  await pageA.getByRole("button", { name: "Создать зашифрованное хранилище" }).click();
-  await expect(pageA.getByRole("button", { name: "Показать фразу восстановления" })).toBeVisible();
+  await pageA.getByRole("button", { name: "Создать новое хранилище" }).click();
+  await expect(pageA.getByRole("button", { name: "Я сохранил фразу" })).toBeVisible();
+  const phrase = await pageA.getByLabel("Фраза восстановления").textContent();
+  expect(phrase?.split(" ")).toHaveLength(24);
+  await pageA.getByRole("button", { name: "Я сохранил фразу" }).click();
   await addTask(pageA, "Общий родитель");
   await pageA.getByRole("tab", { name: "Текст" }).click();
   const textareaA = pageA.getByRole("textbox", { name: "Текст плана" });
+  await expect(textareaA).toHaveValue(/Общий родитель/u);
   await textareaA.fill(`${await textareaA.inputValue()}\n  Подзадача`);
-  await expect(pageA.getByText("синхронизировано", { exact: true })).toBeVisible();
-  await pageA.getByRole("button", { name: "Показать фразу восстановления" }).click();
-  const phrase = await pageA.getByLabel("Фраза восстановления").textContent();
-  expect(phrase?.split(" ")).toHaveLength(24);
+  await pageA.getByRole("tab", { name: "Список" }).click();
+  await expect(pageA.getByRole("checkbox", { name: "Завершить: Подзадача" })).toBeVisible();
+  await expectSyncStatus(pageA, "синхронизировано");
 
   await pageB.goto("/?e2e=1");
   await pageB.getByRole("textbox", { name: "Фраза восстановления" }).fill(phrase ?? "");
-  await pageB.getByRole("button", { name: "Восстановить по фразе" }).click();
+  await pageB.getByRole("button", { name: "Подключить по фразе" }).click();
   await expect(pageB.getByText("Общий родитель", { exact: true })).toBeVisible();
+  await expect(pageB.getByRole("checkbox", { name: "Завершить: Подзадача" })).toBeVisible();
 
   await blockRelay(contextA);
   await blockRelay(contextB);
@@ -47,15 +59,15 @@ test("pairs two profiles, edits offline, converges, and persists", async ({ play
   await addTask(pageA, "Офлайн A");
   await addTask(pageB, "Офлайн B");
   await pageB.getByRole("checkbox", { name: "Завершить: Подзадача" }).click();
-  await expect(pageA.getByText(/^офлайн/u)).toBeVisible();
-  await expect(pageB.getByText(/^офлайн/u)).toBeVisible();
+  await expectSyncStatus(pageA, /^офлайн/u);
+  await expectSyncStatus(pageB, /^офлайн/u);
 
-  await contextB.unroute("**/v1/**");
+  await contextB.setOffline(false);
   await pageB.evaluate(() => window.dispatchEvent(new Event("online")));
-  await expect(pageB.getByText("синхронизировано", { exact: true })).toBeVisible();
-  await contextA.unroute("**/v1/**");
+  await expectSyncStatus(pageB, "синхронизировано");
+  await contextA.setOffline(false);
   await pageA.evaluate(() => window.dispatchEvent(new Event("online")));
-  await expect(pageA.getByText("синхронизировано", { exact: true })).toBeVisible();
+  await expectSyncStatus(pageA, "синхронизировано");
   await pageB.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(pageB.getByText("Офлайн A", { exact: true })).toBeVisible();
   expect(await canonicalText(pageA)).toBe(await canonicalText(pageB));

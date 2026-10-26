@@ -5,7 +5,6 @@ import androidx.glance.GlanceId
 import androidx.glance.action.ActionParameters
 import androidx.glance.appwidget.action.ActionCallback
 import org.json.JSONObject
-import java.time.LocalDate
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.UUID
@@ -19,13 +18,14 @@ class ToggleTaskAction : ActionCallback {
     val taskId = requireNotNull(parameters[TaskId])
     val completed = requireNotNull(parameters[Completed])
     val id = UUID.randomUUID().toString()
+    val completedAt = Instant.now().truncatedTo(ChronoUnit.MILLIS)
     val command = JSONObject()
       .put("version", 1)
       .put("id", id)
       .put("taskId", taskId)
       .put("completed", completed)
-      .put("completedAt", Instant.now().truncatedTo(ChronoUnit.MILLIS).toString())
-      .put("completedOn", LocalDate.now().toString())
+      .put("completedAt", completedAt.toString())
+      .put("completedOn", planDate(completedAt).toString())
     val storage = WidgetStorage(context)
     storage.enqueueCommand(id, command.toString())
     storage.toggleSnapshot(taskId, completed)

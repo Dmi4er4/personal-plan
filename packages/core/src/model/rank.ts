@@ -7,6 +7,18 @@ function containerKey(bucket: Bucket, parentId: string | null): string {
 }
 
 export function repairInvalidTaskOrders(doc: Y.Doc): number {
+  // Most calls come from normal edits/sync polls. Checking the raw rank avoids
+  // parsing and sorting every task when no repair is needed.
+  let needsRepair = false;
+  for (const value of doc.getMap<unknown>("tasks").values()) {
+    if (!(value instanceof Y.Map)) continue;
+    const order: unknown = value.get("order");
+    if (typeof order !== "number" || !Number.isSafeInteger(order) || order < 0) {
+      needsRepair = true;
+      break;
+    }
+  }
+  if (!needsRepair) return 0;
   const snapshot = snapshotPlan(doc);
   const invalidIds = new Set(
     snapshot.diagnostics

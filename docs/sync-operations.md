@@ -93,6 +93,53 @@ testing. If Cloudflare is deliberately selected as production, use
 Object data retention are separate operations; never delete or recreate the
 `VAULTS` namespace during a code rollback.
 
+## Client crash recovery
+
+Clients persist downloaded Yjs data before advancing the relay cursor. A durable
+resume checkpoint binds that cursor to a SHA-256 fingerprint of bytes actually
+acknowledged by SQLite/IndexedDB and the relay update ID at that cursor. The
+persistence owner verifies the loaded document and flushes pending Yjs operations
+that do not emit an update event. Hashing acknowledged bytes avoids false
+mismatches when replay changes Yjs's internal encoding.
+
+Backends without this persistence witness use logical content, clocks/deletions
+and unresolved-update fingerprints; unsupported content retains binary fallback.
+An unchanged, verified local plan resumes by downloading only new updates.
+
+If the fingerprint/cursor differs or the relay history has been replaced, the
+client bootstraps the authenticated remote state and uploads the missing local
+Yjs delta. This repairs a lost local outbox or downloaded plan write without
+sending the whole plan on every restart. Checkpoint writes are skipped if a
+local edit races with the outbox check. Failed checkpoint writes disable this
+optimization; they do not remove pending updates.
+
+## Bounded synchronization
+
+Updated clients request `paged=1` on bootstrap and update-list routes. Pages
+normally stay below 1,500,000 JSON bytes and expose `hasMore`; a snapshot can
+occupy the first page alone. Clients follow every page before committing the
+bootstrap cursor. Requests without `paged=1` keep the legacy response format.
+
+Upload batches also stay near 1,500,000 bytes, below the relay's 2,000,000-byte
+request limit. Remaining outbox entries retain the pending status and upload
+on the next pass. Replaying 1,500,000 ciphertext characters triggers a fresh
+encrypted snapshot, so large histories do not accumulate until 200 locally
+acknowledged updates. Android requests have a 30-second timeout.
+
+Deploy the relay before distributing updated clients to enable bounded
+downloads. Old relays accept these clients but still return the full bootstrap.
+
+Version 1.0.17 also requests `resume=1` for incremental downloads. The relay
+returns the update ID at the requested cursor so clients can detect restored or
+replaced history. If a newer snapshot is smaller than the remaining covered
+log, it recommends bootstrap with a short metadata response. Bootstrap page
+continuations use `resume=0` to finish the selected snapshot consistently.
+
+The safe relay journal includes response body sizes and declared request body
+sizes, in addition to route/status/duration and the truncated vault fingerprint.
+It can include a whitelisted resume reason code. It does not include plan
+content, encrypted envelopes, credentials or arbitrary headers.
+
 ## Safe inspection
 
 Operational inspection may report only vault count, update count, maximum cursor, snapshot coverage cursor, envelope byte sizes, and timestamps. Never print authorization headers, auth verifiers, nonces, ciphertext, request bodies, recovery phrases, or root-secret material. The relay cannot inspect Yjs, task titles, notes, dates, completion, or parent relationships.

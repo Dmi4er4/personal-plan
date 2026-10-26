@@ -1,0 +1,10 @@
+<resources>
+  <style name="PlanWidgetQuickAddTheme" parent="@android:style/Theme.Material.Light.Dialog.Alert">
+    <item name="android:colorAccent">#595EC7</item>
+    <item name="android:fontFamily">sans</item>
+    <item name="android:navigationBarColor">#F7F7FB</item>
+    <item name="android:statusBarColor">#F7F7FB</item>
+    <item name="android:windowLightNavigationBar">true</item>
+    <item name="android:windowLightStatusBar">true</item>
+  </style>
+</resources>

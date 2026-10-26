@@ -208,14 +208,13 @@ describe("App", () => {
     );
   });
 
-  it("refreshes at local midnight, prunes once per date, and completes on the new day", async () => {
+  it("keeps plans through midnight, rolls over at 04:00, and completes on the planning day", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 7, 3, 23, 59, 59, 900));
-    let localToday: LocalDate = "2026-08-03";
     const store = new InMemoryPlanStore();
     addTask(store.doc, {
       id: "rollover-task",
-      title: "Перенести через полночь",
+      title: "Перенести в 4 утра",
       note: null,
       bucket: { kind: "date", date: "2026-08-03" },
       parentId: null,
@@ -247,7 +246,7 @@ describe("App", () => {
     });
     addTask(store.doc, {
       id: "prune-on-rollover",
-      title: "Удалить после полуночи",
+      title: "Удалить после 4 утра",
       note: null,
       bucket: { kind: "date", date: "2026-07-04" },
       parentId: "prune-parent",
@@ -268,7 +267,6 @@ describe("App", () => {
       <App
         clock={() => new Date()}
         store={store}
-        today={() => localToday}
       />,
     );
     await act(async () => {
@@ -282,13 +280,23 @@ describe("App", () => {
       "prune-on-rollover",
     );
 
-    localToday = "2026-08-04";
     await act(async () => {
       await vi.advanceTimersByTimeAsync(100);
     });
+    expect(screen.getByRole("region", { name: "Сегодня — пн, 3 августа" })).toBeInTheDocument();
+    expect(snapshotPlan(store.doc).tasks.map(({ id }) => id)).toContain("prune-on-rollover");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(14_399_999);
+    });
+    expect(screen.getByRole("region", { name: "Сегодня — пн, 3 августа" })).toBeInTheDocument();
+    expect(snapshotPlan(store.doc).tasks.map(({ id }) => id)).toContain("prune-on-rollover");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
 
     const newToday = screen.getByRole("region", { name: "Сегодня — вт, 4 августа" });
-    expect(within(newToday).getByText("Перенести через полночь")).toBeInTheDocument();
+    expect(within(newToday).getByText("Перенести в 4 утра")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Меню" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Настройки" }));
     expect(
@@ -305,7 +313,7 @@ describe("App", () => {
 
     fireEvent.click(
       within(newTodayAfterSettings).getByRole("checkbox", {
-        name: "Завершить: Перенести через полночь",
+        name: "Завершить: Перенести в 4 утра",
       }),
     );
     expect(snapshotPlan(store.doc).tasks.find(({ id }) => id === "rollover-task"))
@@ -321,7 +329,7 @@ describe("App", () => {
     expect(afterRolloverTransactions).toBeGreaterThan(0);
   });
 
-  it("refreshes the local date on focus before the next scheduled midnight", async () => {
+  it("refreshes the planning date on focus and visibility after suspension", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 7, 3, 12, 0, 0, 0));
     let localToday: LocalDate = "2026-08-03";

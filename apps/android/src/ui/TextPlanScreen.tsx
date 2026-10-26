@@ -41,6 +41,8 @@ interface LegacyPreview {
 
 export function TextPlanScreen() {
   const plan = useAndroidPlan();
+  const planRef = useRef(plan);
+  planRef.current = plan;
   const canonical = useMemo(
     () => serializePlan(plan.projected, plan.today),
     [plan.projected, plan.today],
@@ -65,12 +67,20 @@ export function TextPlanScreen() {
   pendingDraftRef.current = { canonical, value };
 
   const flushDraft = (draftValue: string, baseCanonical: string, updateUi: boolean) => {
+    const currentPlan = planRef.current;
     try {
-      const result = commitTextDraft(plan.doc, draftValue, baseCanonical, plan.today, {
+      const result = commitTextDraft(currentPlan.doc, draftValue, baseCanonical, currentPlan.today, {
         idFactory: randomUUID,
         now: new Date().toISOString(),
       });
       if (result.kind === "invalid") {
+        void currentPlan.saveDraft(draftValue).catch((reason: unknown) => {
+          if (updateUi) {
+            setApplyError(
+              `Не удалось сохранить черновик: ${applyErrorMessage(reason)}`,
+            );
+          }
+        });
         if (updateUi) {
           setDiagnostics(result.diagnostics);
           setApplyError(null);
@@ -81,8 +91,9 @@ export function TextPlanScreen() {
         setDiagnostics([]);
         setApplyError(null);
       }
-      void plan.clearDraft();
+      void currentPlan.clearDraft();
     } catch (reason: unknown) {
+      void currentPlan.saveDraft(draftValue);
       if (updateUi) {
         setApplyError(
           `Не удалось применить изменения: ${applyErrorMessage(reason)}`,
@@ -115,6 +126,9 @@ export function TextPlanScreen() {
       }
     }
     if (value === canonical) {
+      if (planRef.current.draft !== null) {
+        void planRef.current.clearDraft();
+      }
       return;
     }
     const version = editVersion.current;
@@ -122,10 +136,10 @@ export function TextPlanScreen() {
       if (editVersion.current !== version) {
         return;
       }
-      flushDraft(value, canonical, true);
+      flushDraftRef.current(true);
     }, 400);
     return () => clearTimeout(timer);
-  }, [canonical, plan, value]);
+  }, [canonical, value]);
 
   return (
     <View style={{ flex: 1 }}>
@@ -139,7 +153,9 @@ export function TextPlanScreen() {
           setDiagnostics([]);
           setApplyError(null);
           setLegacyPreview(null);
-          void plan.saveDraft(next);
+          // Persist only from the idle/blur flush. Updating the provider here
+          // rebuilds its context and pushes the whole multiline value back to
+          // native on every keystroke, which makes typing visibly stutter.
         }}
         style={styles.textarea}
         textAlignVertical="top"

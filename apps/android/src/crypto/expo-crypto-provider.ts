@@ -4,20 +4,59 @@ import type { CryptoProvider } from "@personal-plan/sync";
 import {
   AESEncryptionKey,
   AESSealedData,
+  CryptoDigestAlgorithm,
   aesDecryptAsync,
   aesEncryptAsync,
+  digest,
   getRandomBytesAsync,
 } from "expo-crypto";
 
+const HASH_CHUNK_BYTES = 16 * 1024;
+
+async function yieldingSha256(input: Uint8Array): Promise<Uint8Array> {
+  const hash = sha256.create();
+  let deadline = 0;
+  for (let offset = 0; offset < input.length; offset += HASH_CHUNK_BYTES) {
+    hash.update(input.subarray(offset, offset + HASH_CHUNK_BYTES));
+    if (input.length > HASH_CHUNK_BYTES && performance.now() >= deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      deadline = performance.now() + 4;
+    }
+  }
+  return hash.digest();
+}
+
 export class ExpoCryptoProvider implements CryptoProvider {
+  private nativeDigestAvailable = true;
+
   async randomBytes(length: number): Promise<Uint8Array> {
     return getRandomBytesAsync(length);
   }
 
-  // Pure-JS implementation: expo-crypto's native `digest` rejects ArrayBuffer
-  // inputs created via Uint8Array#slice on Hermes ("no ArrayBuffer attached").
   async sha256(input: Uint8Array): Promise<Uint8Array> {
-    return Promise.resolve(sha256(input.slice()));
+    const started = performance.now();
+    let mode = "native";
+    try {
+      if (this.nativeDigestAvailable) {
+        try {
+          // Android's Expo bridge expects a TypedArray, not its ArrayBuffer.
+          // A fresh view also handles slices and nonzero offsets on Hermes.
+          const bytes = new Uint8Array(input.length);
+          bytes.set(input);
+          return new Uint8Array(await digest(CryptoDigestAlgorithm.SHA256, bytes));
+        } catch {
+          this.nativeDigestAvailable = false;
+          console.warn("personal-plan native SHA-256 unavailable; using yielding fallback");
+        }
+      }
+      mode = "yielding";
+      return await yieldingSha256(input);
+    } finally {
+      const durationMs = Math.round(performance.now() - started);
+      if (input.length >= 64 * 1024 || durationMs >= 25) {
+        console.info(`personal-plan perf sha256 mode=${mode} bytes=${String(input.length)} durationMs=${String(durationMs)}`);
+      }
+    }
   }
 
   async hkdfSha256(inputKey: Uint8Array, info: Uint8Array, length: number): Promise<Uint8Array> {
