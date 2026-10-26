@@ -1,10 +1,11 @@
-import type { OutboxEntry, SyncStateStore } from "@personal-plan/sync";
+import type { OutboxEntry, ResumeCheckpoint, SyncStateStore } from "@personal-plan/sync";
 import type { SQLiteDatabase } from "expo-sqlite";
 import { openPersonalPlanDatabase } from "./sqlite-database";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sync_meta (vault_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0, acknowledged_since_snapshot INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS outbox (update_id TEXT PRIMARY KEY, vault_id TEXT NOT NULL, envelope_json TEXT NOT NULL, queued_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sync_checkpoints (vault_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL, fingerprint TEXT NOT NULL, relay_update_id TEXT);
 `;
 
 export class SqliteSyncStateStore implements SyncStateStore {
@@ -18,11 +19,21 @@ export class SqliteSyncStateStore implements SyncStateStore {
   async acknowledge(updateIds: string[]): Promise<number> { if (updateIds.length === 0) return 0; const db = await this.db(); let count = 0; await db.withTransactionAsync(async () => { for (const id of updateIds) { const result = await db.runAsync("DELETE FROM outbox WHERE update_id=?", id); count += result.changes; } }); if (count > 0) { const vaults = await db.getAllAsync<{ vault_id: string }>("SELECT vault_id FROM sync_meta"); for (const { vault_id } of vaults) await db.runAsync("UPDATE sync_meta SET acknowledged_since_snapshot=acknowledged_since_snapshot+? WHERE vault_id=?", count, vault_id); } return count; }
   async getAcknowledgedSinceSnapshot(vaultId: string): Promise<number> { const db = await this.ensure(vaultId); return (await db.getFirstAsync<{ value: number }>("SELECT acknowledged_since_snapshot AS value FROM sync_meta WHERE vault_id=?", vaultId))?.value ?? 0; }
   async resetAcknowledgedSinceSnapshot(vaultId: string): Promise<void> { const db = await this.ensure(vaultId); await db.runAsync("UPDATE sync_meta SET acknowledged_since_snapshot=0 WHERE vault_id=?", vaultId); }
+  async getResumeCheckpoint(vaultId: string): Promise<ResumeCheckpoint | null> {
+    const db = await this.db();
+    const row = await db.getFirstAsync<{ cursor: number; fingerprint: string; relay_update_id: string | null }>("SELECT cursor,fingerprint,relay_update_id FROM sync_checkpoints WHERE vault_id=?", vaultId);
+    return row === null ? null : { version: 1, cursor: row.cursor, fingerprint: row.fingerprint, relayUpdateId: row.relay_update_id };
+  }
+  async setResumeCheckpoint(vaultId: string, checkpoint: ResumeCheckpoint): Promise<void> {
+    const db = await this.db();
+    await db.runAsync("INSERT INTO sync_checkpoints(vault_id,cursor,fingerprint,relay_update_id) VALUES(?,?,?,?) ON CONFLICT(vault_id) DO UPDATE SET cursor=excluded.cursor,fingerprint=excluded.fingerprint,relay_update_id=excluded.relay_update_id", vaultId, checkpoint.cursor, checkpoint.fingerprint, checkpoint.relayUpdateId);
+  }
   async resetAll(): Promise<void> {
     const db = await this.db();
     await db.withTransactionAsync(async () => {
       await db.runAsync("DELETE FROM outbox");
       await db.runAsync("DELETE FROM sync_meta");
+      await db.runAsync("DELETE FROM sync_checkpoints");
     });
   }
 }

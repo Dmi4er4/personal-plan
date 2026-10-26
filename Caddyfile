@@ -8,3 +8,11 @@
 {$PERSONAL_PLAN_HOST:localhost} {
 	reverse_proxy 127.0.0.1:8787
 }
+
+deling.89-167-82-154.sslip.io {
+	reverse_proxy 127.0.0.1:8791
+}
+
+ntfy.89-167-82-154.sslip.io {
+	reverse_proxy 127.0.0.1:8090
+}

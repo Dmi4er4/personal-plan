@@ -1,6 +1,6 @@
 import { addTask, addTaskToIncompleteHead, createPlanDoc, projectPlan, snapshotPlan } from "@personal-plan/core";
 import { describe, expect, it } from "vitest";
-import { buildNewTask } from "../../src/ui/new-task";
+import { buildNewSubtask, buildNewTask, newTaskValidationError } from "../../src/ui/new-task";
 
 const TODAY = "2026-08-04";
 const TOMORROW = "2026-08-05";
@@ -37,5 +37,36 @@ describe("Новое дело", () => {
   it("ignores an empty title", () => {
     expect(buildNewTask("", { kind: "date", date: TODAY }, { id: "fresh", now: NOW })).toBeNull();
     expect(buildNewTask("   ", { kind: "date", date: TODAY }, { id: "fresh", now: NOW })).toBeNull();
+    expect(newTaskValidationError("   ")).toBe("Введите название дела");
+    expect(newTaskValidationError("Дело")).toBeNull();
+  });
+
+  it("builds a child in its parent bucket and rejects nested children", () => {
+    const parent = {
+      id: "parent",
+      title: "Родитель",
+      note: null,
+      bucket: { kind: "date", date: TODAY },
+      parentId: null,
+      order: 0,
+      completedAt: null,
+      completedOn: null,
+      childrenRevealedOn: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      deleted: false,
+      deletedAt: null,
+      deletedOn: null,
+      prunedOn: null,
+      sourceParentId: null,
+    } as const;
+    expect(buildNewSubtask("Шаг", parent, { id: "child", now: NOW })).toMatchObject({
+      id: "child",
+      title: "Шаг",
+      parentId: "parent",
+      bucket: parent.bucket,
+    });
+    expect(buildNewSubtask("Внук", { ...parent, parentId: "other" }, { id: "grandchild", now: NOW })).toBeNull();
+    expect(buildNewSubtask("Поздний шаг", { ...parent, completedAt: NOW, completedOn: TODAY }, { id: "late", now: NOW })).toBeNull();
   });
 });

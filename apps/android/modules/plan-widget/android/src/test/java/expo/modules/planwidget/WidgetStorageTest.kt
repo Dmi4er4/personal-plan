@@ -13,6 +13,8 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.json.JSONObject
 import java.io.File
+import java.time.Instant
+import java.time.LocalDate
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -38,6 +40,83 @@ class WidgetStorageTest {
     assertEquals(true, tasks.getJSONObject(1).getBoolean("completed"))
     storage.toggleSnapshot("p", false)
     assertEquals(false, JSONObject(storage.readSnapshot()!!).getJSONArray("sections").getJSONObject(0).getJSONArray("tasks").getJSONObject(1).getBoolean("completed"))
+  }
+
+  @Test fun quickAddSnapshotCreatesTodayAtTheHeadWithoutDuplicates() {
+    val storage = WidgetStorage(context)
+    storage.writeSnapshot("""{"version":1,"generatedAt":"old","syncState":"synced","sections":[{"key":"2026-09-02","primaryLabel":"Сегодня","secondaryLabel":"2.09","tasks":[{"id":"old","title":"Старое","note":null,"completed":false,"depth":0}]}]}""")
+
+    storage.addTaskSnapshot(
+      "fresh",
+      "Новое",
+      LocalDate.parse("2026-09-02"),
+      "2026-09-02T08:00:00.000Z",
+      "pending",
+    )
+    storage.addTaskSnapshot(
+      "fresh",
+      "Новое",
+      LocalDate.parse("2026-09-02"),
+      "2026-09-02T08:00:00.000Z",
+      "pending",
+    )
+
+    val snapshot = JSONObject(storage.readSnapshot()!!)
+    val section = snapshot.getJSONArray("sections").getJSONObject(0)
+    val tasks = section.getJSONArray("tasks")
+    assertEquals("pending", snapshot.getString("syncState"))
+    assertEquals("2026-09-02", section.getString("key"))
+    assertEquals(2, tasks.length())
+    assertEquals(listOf("fresh", "old"), (0 until tasks.length()).map { tasks.getJSONObject(it).getString("id") })
+  }
+
+  @Test fun quickAddSnapshotBuildsTodayWhenThePlanWasEmpty() {
+    val storage = WidgetStorage(context)
+
+    val raw = storage.addTaskSnapshot(
+      "fresh",
+      "Первая задача",
+      LocalDate.parse("2026-09-02"),
+      "2026-09-02T08:00:00.000Z",
+      "offline",
+    )
+
+    val snapshot = JSONObject(raw)
+    val section = snapshot.getJSONArray("sections").getJSONObject(0)
+    assertEquals("offline", snapshot.getString("syncState"))
+    assertEquals("Сегодня", section.getString("primaryLabel"))
+    assertEquals("2.09", section.getString("secondaryLabel"))
+    assertEquals("Первая задача", section.getJSONArray("tasks").getJSONObject(0).getString("title"))
+  }
+
+  @Test fun quickAddCommandCarriesStableCommandAndTaskIds() {
+    val raw = buildQuickAddCommand(
+      "123e4567-e89b-42d3-a456-426614174030",
+      "123e4567-e89b-42d3-a456-426614174031",
+      "  Купить хлеб  ",
+      Instant.parse("2026-09-02T08:00:00.123456789Z"),
+      LocalDate.parse("2026-09-02"),
+    )
+
+    val command = JSONObject(raw)
+    assertEquals("create", command.getString("kind"))
+    assertEquals("123e4567-e89b-42d3-a456-426614174030", command.getString("id"))
+    assertEquals("123e4567-e89b-42d3-a456-426614174031", command.getString("taskId"))
+    assertEquals("Купить хлеб", command.getString("title"))
+    assertEquals("2026-09-02T08:00:00.123Z", command.getString("createdAt"))
+    assertEquals("2026-09-02", command.getString("createdOn"))
+  }
+
+  @Test fun commandsAreReadChronologicallyInsteadOfByRandomUuid() {
+    val storage = WidgetStorage(context)
+    val olderId = "ffffffff-ffff-4fff-afff-ffffffffffff"
+    val newerId = "00000000-0000-4000-8000-000000000000"
+    val older = """{"version":1,"id":"$olderId","completedAt":"2026-09-02T08:00:00.000Z"}"""
+    val newer = """{"version":1,"id":"$newerId","completedAt":"2026-09-02T08:01:00.000Z"}"""
+    storage.enqueueCommand(olderId, older)
+    storage.enqueueCommand(newerId, newer)
+
+    assertEquals(listOf(older, newer), storage.readCommands())
   }
 
   @Test fun widgetPrefersObservableSnapshotStateOverFileFallback() {

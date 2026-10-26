@@ -1,58 +1,14 @@
-import { restoreTask, serializePlan, setTaskCompleted, type LocalDate, type TaskSnapshot } from "@personal-plan/core";
+import { serializePlan } from "@personal-plan/core";
 import { createPairingQr, rootSecretToPhrase } from "@personal-plan/sync";
 import { useState } from "react";
 import { Alert, Pressable, ScrollView, Text, View } from "react-native";
-import type * as Y from "yjs";
 import { useAndroidPlan } from "../app/AndroidPlanProvider";
 import { RecoveryCards } from "./RecoveryCards";
 import { styles } from "./styles";
 
-function HistorySection({ doc, history, snapshot, today }: {
-  doc: Y.Doc;
-  history: TaskSnapshot[];
-  snapshot: Map<string, TaskSnapshot>;
-  today: LocalDate;
-}) {
-  const historyIds = new Set(history.map(({ id }) => id));
-  if (history.length === 0) {
-    return <Text style={styles.settingsEmpty}>Пока пусто</Text>;
-  }
-  return <>
-    {history.map((task) => {
-      const parentIsHistorical = task.parentId !== null && historyIds.has(task.parentId);
-      const standaloneChild = task.parentId !== null && !parentIsHistorical;
-      const canRestore = task.parentId === null || standaloneChild;
-      const parent = standaloneChild && task.parentId !== null ? snapshot.get(task.parentId) : undefined;
-      const deleted = task.deleted;
-      const action = deleted ? "Восстановить" : "Вернуть";
-      return <View key={task.id} style={[styles.historyItem, parentIsHistorical ? styles.historyChild : undefined]}>
-        <View style={styles.historyCopy}>
-          <Text style={[styles.title, deleted ? styles.historyDeleted : styles.completed]}>{task.title}</Text>
-          {task.note === null ? null : <Text style={styles.note}>{task.note}</Text>}
-          {parent === undefined ? null : <Text style={styles.historyMeta}>Родитель: {parent.title}</Text>}
-          {deleted ? <Text style={styles.historyMeta}>Удалено</Text> : null}
-        </View>
-        {canRestore ? <Pressable
-          accessibilityLabel={`${action}: ${task.title}`}
-          accessibilityRole="button"
-          onPress={() => {
-            if (deleted) restoreTask(doc, task.id);
-            else setTaskCompleted(doc, task.id, { completed: false, at: new Date().toISOString(), on: today });
-          }}
-          style={styles.historyAction}
-        ><Text style={styles.historyActionText}>{action}</Text></Pressable> : null}
-      </View>;
-    })}
-  </>;
-}
-
-export function SettingsScreen({ doc, history, rootSecret, relayUrl, snapshot, today, onClose }: {
-  doc: Y.Doc;
-  history: TaskSnapshot[];
+export function SettingsScreen({ rootSecret, relayUrl, onClose }: {
   rootSecret: Uint8Array;
   relayUrl: string;
-  snapshot: Map<string, TaskSnapshot>;
-  today: LocalDate;
   onClose(): void;
 }) {
   const plan = useAndroidPlan();
@@ -135,7 +91,5 @@ export function SettingsScreen({ doc, history, rootSecret, relayUrl, snapshot, t
       <Text style={styles.secondaryButtonText}>Подключить заново</Text>
     </Pressable>
     {disconnectError ? <Text style={styles.error}>{disconnectError}</Text> : null}
-    <Text style={styles.settingsSectionTitle}>История</Text>
-    <HistorySection doc={doc} history={history} snapshot={snapshot} today={today} />
   </ScrollView>;
 }

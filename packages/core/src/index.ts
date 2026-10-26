@@ -4,6 +4,7 @@ export {
   addTask,
   addTaskToIncompleteHead,
   applyWidgetCompletionCommand,
+  applyWidgetCreateTaskCommand,
   editTask,
   moveTask,
   reorderTaskSequence,
@@ -19,8 +20,10 @@ export {
   snapshotPlan,
 } from "./model/schema.js";
 export { repairInvalidTaskOrders } from "./model/rank.js";
+export { planCheckpointContent } from "./model/checkpoint.js";
 export { isLocalDate } from "./model/types.js";
 export { InvalidLocalDateError, addDays, compareLocalDate } from "./time/local-date.js";
+export { getPlanDate, millisecondsUntilNextPlanDay, PLAN_DAY_START_HOUR, startPlanDayClock } from "./time/plan-day.js";
 export {
   effectiveBucket,
   isEffectivelyCompleted,
@@ -39,6 +42,7 @@ export { serializePlan } from "./text/serialize.js";
 export type {
   Bucket,
   CompletionCommand,
+  CreateTaskCommand,
   LocalDate,
   NewTaskInput,
   RemovalMeta,

@@ -114,14 +114,28 @@ private fun openListIntent(context: Context): Intent =
     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
   }
 
+private fun quickAddIntent(context: Context): Intent =
+  Intent(context, QuickAddActivity::class.java).apply {
+    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+  }
+
 @Composable private fun WidgetContent(snapshot: NativeSnapshot?, preferences: Preferences) {
   val context = LocalContext.current
   val openList = openListIntent(context)
+  val quickAdd = quickAddIntent(context)
   val rootClickable = GlanceModifier.fillMaxSize().background(widgetColor(0xFFF7F7FB)).padding(12.dp).clickable(actionStartActivity(openList))
   Column(rootClickable) {
     Row(GlanceModifier.fillMaxWidth().clickable(actionStartActivity(openList)), verticalAlignment = Alignment.CenterVertically) {
       Text("Планы", style = TextStyle(color = widgetColor(0xFF25262D), fontWeight = FontWeight.Bold))
       Spacer(GlanceModifier.defaultWeight())
+      if (snapshot != null) {
+        Box(
+          GlanceModifier.size(40.dp).clickable(actionStartActivity(quickAdd)),
+          contentAlignment = Alignment.Center,
+        ) {
+          Image(ImageProvider(R.drawable.ic_add), "Новое дело", GlanceModifier.size(22.dp))
+        }
+      }
       Text(statusLabel(snapshot?.status), style = TextStyle(color = widgetColor(0xFF747580)))
     }
     if (snapshot == null) {

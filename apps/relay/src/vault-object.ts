@@ -1,4 +1,4 @@
-import { base64UrlDecode, type EncryptedEnvelope } from "@personal-plan/sync";
+import { base64UrlDecode, type EncryptedEnvelope, type StoredEnvelope } from "@personal-plan/sync";
 
 import { constantTimeVerifierEqual, parseBearer, verifierFor } from "./auth.js";
 import { error, HttpError, json, readJson } from "./http.js";
@@ -58,7 +58,7 @@ export class VaultObject {
       if (request.method === "POST" && url.pathname.endsWith("/updates")) return this.#append(request, vaultId);
       if (request.method === "GET" && url.pathname.endsWith("/updates")) return this.#list(url, vaultId);
       if (request.method === "PUT" && url.pathname.endsWith("/snapshot")) return this.#snapshot(request, vaultId);
-      if (request.method === "GET" && url.pathname.endsWith("/bootstrap")) return this.#bootstrap(vaultId);
+      if (request.method === "GET" && url.pathname.endsWith("/bootstrap")) return this.#bootstrap(url, vaultId);
       if (request.method === "DELETE" && url.pathname === `/v1/vaults/${encodeURIComponent(vaultId)}`) return this.#delete(request, vaultId);
       return error("not_found", 404);
     } catch (reason) {
@@ -108,6 +108,17 @@ export class VaultObject {
     if (!/^\d+$/u.test(rawAfter)) return error("invalid_cursor", 400);
     const after = Number(rawAfter);
     if (!Number.isSafeInteger(after)) return error("invalid_cursor", 400);
+    if (url.searchParams.get("paged") === "1") {
+      const anchorUpdateId = this.#ctx.storage.sql.exec<{ update_id: string }>("SELECT update_id FROM updates WHERE cursor = ?", after).toArray()[0]?.update_id ?? null;
+      if (url.searchParams.get("resume") === "1") {
+        const snapshot = this.#ctx.storage.sql.exec<{ cursor: number; bytes: number }>("SELECT cursor,LENGTH(ciphertext) AS bytes FROM snapshots WHERE singleton = 1 AND cursor > ?", after).toArray()[0];
+        if (snapshot !== undefined) {
+          const backlog = this.#ctx.storage.sql.exec<{ bytes: number }>("SELECT COALESCE(SUM(LENGTH(ciphertext)),0) AS bytes FROM updates WHERE cursor > ? AND cursor <= ?", after, snapshot.cursor).toArray()[0];
+          if (backlog !== undefined && backlog.bytes > snapshot.bytes) return json({ updates: [], nextCursor: after, hasMore: false, anchorUpdateId, bootstrapRequired: true });
+        }
+      }
+      return json({ ...this.#updatePage(vaultId, after), anchorUpdateId });
+    }
     const rows = this.#ctx.storage.sql.exec<UpdateRow>("SELECT cursor, update_id, kind, nonce, ciphertext, created_at FROM updates WHERE cursor > ? ORDER BY cursor ASC LIMIT 500", after).toArray();
     const updates = rows.map((row) => ({ cursor: row.cursor, envelope: envelopeFromRow(vaultId, row) }));
     return json({ updates, nextCursor: rows.at(-1)?.cursor ?? after });
@@ -129,9 +140,32 @@ export class VaultObject {
     return new Response(null, { status: 204 });
   }
 
-  #bootstrap(vaultId: string): Response {
+  #updatePage(vaultId: string, after: number, snapshot: StoredEnvelope | null = null) {
+    const rows = this.#ctx.storage.sql.exec<UpdateRow>("SELECT cursor, update_id, kind, nonce, ciphertext, created_at FROM updates WHERE cursor > ? ORDER BY cursor ASC LIMIT 501", after);
+    const updates: StoredEnvelope[] = [];
+    const encoder = new TextEncoder();
+    let bytes = 512 + encoder.encode(JSON.stringify(snapshot)).length;
+    let hasMore = false;
+    for (const row of rows) {
+      const stored = { cursor: row.cursor, envelope: envelopeFromRow(vaultId, row) };
+      const size = encoder.encode(JSON.stringify(stored)).length + 1;
+      if (updates.length === 500 || (bytes + size > 1_500_000 && (snapshot !== null || updates.length > 0))) {
+        hasMore = true;
+        break;
+      }
+      updates.push(stored);
+      bytes += size;
+    }
+    return { updates, nextCursor: updates.at(-1)?.cursor ?? after, hasMore };
+  }
+
+  #bootstrap(url: URL, vaultId: string): Response {
     const snapshot = this.#ctx.storage.sql.exec<SnapshotRow>("SELECT cursor, update_id, nonce, ciphertext, created_at FROM snapshots WHERE singleton = 1").toArray()[0];
     const after = snapshot?.cursor ?? 0;
+    if (url.searchParams.get("paged") === "1") {
+      const storedSnapshot = snapshot === undefined ? null : { cursor: snapshot.cursor, envelope: envelopeFromRow(vaultId, snapshot, "snapshot") };
+      return json({ snapshot: storedSnapshot, ...this.#updatePage(vaultId, after, storedSnapshot) });
+    }
     const rows = this.#ctx.storage.sql.exec<UpdateRow>("SELECT cursor, update_id, kind, nonce, ciphertext, created_at FROM updates WHERE cursor > ? ORDER BY cursor ASC", after).toArray();
     const max = this.#ctx.storage.sql.exec<{ cursor: number }>("SELECT COALESCE(MAX(cursor), 0) AS cursor FROM updates").toArray()[0]?.cursor ?? 0;
     return json({ snapshot: snapshot === undefined ? null : { cursor: snapshot.cursor, envelope: envelopeFromRow(vaultId, snapshot, "snapshot") }, updates: rows.map((row) => ({ cursor: row.cursor, envelope: envelopeFromRow(vaultId, row) })), nextCursor: max });

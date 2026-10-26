@@ -1,6 +1,6 @@
 import Constants from "expo-constants";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { AppState, BackHandler, Pressable, StatusBar, Text, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { snapshotPlan } from "@personal-plan/core";
@@ -13,7 +13,9 @@ import { SqlitePlanStore } from "./storage/sqlite-plan-store";
 import { SqliteSyncStateStore } from "./storage/sqlite-sync-store";
 import { AndroidHttpRelayTransport } from "./sync/http-relay-transport";
 import { PairingScreen } from "./ui/PairingScreen";
+import { HistoryScreen } from "./ui/HistoryScreen";
 import { SettingsScreen } from "./ui/SettingsScreen";
+import { reduceMainLayer, shouldHandleMainBack, type MainLayer } from "./ui/main-layer";
 import { styles } from "./ui/styles";
 import { TextPlanScreen } from "./ui/TextPlanScreen";
 import { TimelineScreen } from "./ui/TimelineScreen";
@@ -25,23 +27,46 @@ const relayUrl = String(Constants.expoConfig?.extra?.relayUrl ?? "http://127.0.0
 function Main() {
   const plan = useAndroidPlan();
   const [tab, setTab] = useState<AppTab>("list");
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const taskById = useMemo(() => new Map(snapshotPlan(plan.doc).records.map((task) => [task.id, task])), [plan.doc, plan.projected]);
+  const [layer, setLayer] = useState<MainLayer>("none");
+  const taskById = useMemo(() => new Map(
+    layer === "history" ? snapshotPlan(plan.doc).records.map((task) => [task.id, task] as const) : [],
+  ), [layer, plan.doc, plan.projected]);
   const openTab = useCallback((nextTab: AppTab) => {
-    setMenuOpen(false);
-    setSettingsOpen(false);
+    setLayer((current) => reduceMainLayer(current, "tab"));
     setTab(nextTab);
   }, []);
   useDeepLinkTab(openTab);
 
-  if (settingsOpen) {
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (!shouldHandleMainBack(layer)) return false;
+      setLayer((current) => reduceMainLayer(current, "back"));
+      return true;
+    });
+    return () => subscription.remove();
+  }, [layer]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") {
+        setLayer((current) => reduceMainLayer(current, "background"));
+      }
+    });
+    return () => subscription.remove();
+  }, []);
+
+  if (layer === "settings") {
     return <SettingsScreen
-      doc={plan.doc}
-      history={plan.projected.history}
-      onClose={() => setSettingsOpen(false)}
+      onClose={() => setLayer((current) => reduceMainLayer(current, "close"))}
       relayUrl={plan.relayUrl}
       rootSecret={plan.rootSecret}
+    />;
+  }
+  if (layer === "history") {
+    return <HistoryScreen
+      doc={plan.doc}
+      history={plan.projected.history}
+      onClose={() => setLayer((current) => reduceMainLayer(current, "close"))}
       snapshot={taskById}
       today={plan.today}
     />;
@@ -51,33 +76,45 @@ function Main() {
     {plan.syncError !== null ? <Text accessibilityRole="alert" style={styles.error}>{plan.syncError}</Text> : null}
     <View style={styles.header}>
       <View style={styles.headerTabs}>
-        <Pressable accessibilityRole="tab" accessibilityState={{ selected: tab === "list" }} style={[styles.tab, tab === "list" ? styles.tabActive : undefined]} onPress={() => setTab("list")}>
+        <Pressable accessibilityRole="tab" accessibilityState={{ selected: tab === "list" }} style={[styles.tab, tab === "list" ? styles.tabActive : undefined]} onPress={() => openTab("list")}>
           <Text style={styles.tabText}>Список</Text>
         </Pressable>
-        <Pressable accessibilityRole="tab" accessibilityState={{ selected: tab === "text" }} style={[styles.tab, tab === "text" ? styles.tabActive : undefined]} onPress={() => setTab("text")}>
+        <Pressable accessibilityRole="tab" accessibilityState={{ selected: tab === "text" }} style={[styles.tab, tab === "text" ? styles.tabActive : undefined]} onPress={() => openTab("text")}>
           <Text style={styles.tabText}>Текст</Text>
         </Pressable>
       </View>
       <View style={styles.menuWrap}>
-        <Pressable accessibilityLabel="Меню" accessibilityRole="button" onPress={() => setMenuOpen((open) => !open)} style={styles.menuButton}>
+        <Pressable accessibilityLabel="Меню" accessibilityRole="button" accessibilityState={{ expanded: layer === "menu" }} onPress={() => setLayer((current) => reduceMainLayer(current, "toggle-menu"))} style={styles.menuButton}>
           <Text style={styles.menuButtonText}>⋮</Text>
         </Pressable>
-        {menuOpen ? (
-          <View accessibilityRole="menu" style={styles.menuPanel}>
-            <Pressable
-              accessibilityRole="menuitem"
-              onPress={() => {
-                setMenuOpen(false);
-                setSettingsOpen(true);
-              }}
-              style={styles.menuItem}
-            >
-              <Text style={styles.menuItemText}>Настройки</Text>
-            </Pressable>
-          </View>
-        ) : null}
       </View>
     </View>
+    {layer === "menu" ? (
+      <View accessibilityViewIsModal style={styles.menuLayer}>
+        <Pressable
+          accessibilityLabel="Закрыть меню"
+          accessibilityRole="button"
+          onPress={() => setLayer((current) => reduceMainLayer(current, "close"))}
+          style={styles.menuBackdrop}
+        />
+        <View accessibilityRole="menu" style={styles.menuPanel}>
+          <Pressable
+            accessibilityRole="menuitem"
+            onPress={() => setLayer((current) => reduceMainLayer(current, "open-history"))}
+            style={styles.menuItem}
+          >
+            <Text style={styles.menuItemText}>История</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="menuitem"
+            onPress={() => setLayer((current) => reduceMainLayer(current, "open-settings"))}
+            style={styles.menuItem}
+          >
+            <Text style={styles.menuItemText}>Настройки</Text>
+          </Pressable>
+        </View>
+      </View>
+    ) : null}
     {tab === "list" ? <TimelineScreen doc={plan.doc} projected={plan.projected} today={plan.today} /> : <TextPlanScreen />}
   </View>;
 }
@@ -132,5 +169,5 @@ export default function App() {
     }
     setConfig(value);
   };
-  return <GestureHandlerRootView style={styles.safe}><SafeAreaProvider><SafeAreaView style={styles.safe}>{config === undefined ? <Text>Проверка хранилища…</Text> : config === null ? <PairingScreen defaultRelayUrl={relayUrl} onConfigure={configure} /> : <AndroidPlanProvider config={config} key={planGeneration} onDisconnect={disconnectVault} onRestoreFromServer={restoreFromServer} planStore={planStore} syncStore={syncStore}><Main /></AndroidPlanProvider>}</SafeAreaView></SafeAreaProvider></GestureHandlerRootView>;
+  return <><StatusBar backgroundColor="#f7f7fb" barStyle="dark-content" /><GestureHandlerRootView style={styles.safe}><SafeAreaProvider><SafeAreaView style={styles.safe}>{config === undefined ? <Text>Проверка хранилища…</Text> : config === null ? <PairingScreen defaultRelayUrl={relayUrl} onConfigure={configure} /> : <AndroidPlanProvider config={config} key={planGeneration} onDisconnect={disconnectVault} onRestoreFromServer={restoreFromServer} planStore={planStore} syncStore={syncStore}><Main /></AndroidPlanProvider>}</SafeAreaView></SafeAreaProvider></GestureHandlerRootView></>;
 }

@@ -7,6 +7,6 @@ export type { EncryptedEnvelope, EncryptPayloadInput, EnvelopeKind } from "./env
 export { createPairingQr, parsePairingQr, phraseToRootSecret, rootSecretToPhrase } from "./pairing.js";
 export type { PairingPayloadV1 } from "./pairing.js";
 export type { AppendUpdatesRequest, AppendUpdatesResponse, BootstrapResponse, CreateVaultRequest, ListUpdatesResponse, PutSnapshotRequest, StoredEnvelope } from "./protocol.js";
-export type { OutboxEntry, SyncStateStore } from "./state-store.js";
-export { SyncClient, SyncIntegrityError } from "./sync-client.js";
-export type { RelayTransport, SyncClientApi, SyncClientOptions, SyncResult } from "./sync-client.js";
+export type { OutboxEntry, ResumeCheckpoint, SyncStateStore } from "./state-store.js";
+export { reconcileAtStartup, SyncClient, SyncIntegrityError } from "./sync-client.js";
+export type { RelayTransport, ResumeDiagnostic, SyncClientApi, SyncClientOptions, SyncResult } from "./sync-client.js";

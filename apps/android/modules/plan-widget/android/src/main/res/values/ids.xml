@@ -1,0 +1,4 @@
+<resources>
+  <item name="quick_add_title" type="id" />
+  <item name="quick_add_submit" type="id" />
+</resources>

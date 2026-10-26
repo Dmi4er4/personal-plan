@@ -1,8 +1,9 @@
 import { addTaskToIncompleteHead, editTask, moveTask, projectPlan, removeTask, reorderTaskSequence, setTaskCompleted, snapshotPlan, type Bucket, type ProjectedPlan, type LocalDate, type TaskSnapshot } from "@personal-plan/core";
 import { randomUUID } from "expo-crypto";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Modal, Pressable, Text, TextInput, View } from "react-native";
+import { BackHandler, Keyboard, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import DraggableFlatList, { type RenderItemParams } from "react-native-draggable-flatlist";
+import { ReduceMotion } from "react-native-reanimated";
 import type * as Y from "yjs";
 import {
   bucketsEqual,
@@ -15,7 +16,7 @@ import {
   type TimelineItem,
 } from "./timeline-model";
 import { TaskRow } from "./TaskRow";
-import { buildNewTask } from "./new-task";
+import { buildNewSubtask, buildNewTask, newTaskValidationError } from "./new-task";
 import { styles } from "./styles";
 import { usePendingDelete } from "./use-pending-delete";
 
@@ -24,10 +25,7 @@ interface TimelineListHandle {
 }
 
 const DRAG_ANIMATION_CONFIG = {
-  damping: 28,
-  mass: 0.72,
-  overshootClamping: true,
-  stiffness: 260,
+  reduceMotion: ReduceMotion.Always,
 } as const;
 
 function renderDragPlaceholder({ item }: { item: TimelineItem }) {
@@ -52,13 +50,18 @@ function sectionMarginStyle(bucket: Bucket): typeof styles.farSection | typeof s
 export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projected: ProjectedPlan; today: LocalDate }) {
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState("");
+  const [newTaskError, setNewTaskError] = useState<string | null>(null);
   const [newTaskBucket, setNewTaskBucket] = useState<Bucket>({ kind: "date", date: today });
   const [expandedCompletedSections, setExpandedCompletedSections] = useState<Set<string>>(() => new Set());
   const [editingTask, setEditingTask] = useState<TaskSnapshot | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editNote, setEditNote] = useState("");
   const [editValidationError, setEditValidationError] = useState<string | null>(null);
+  const [addingSubtask, setAddingSubtask] = useState(false);
+  const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
+  const [newSubtaskError, setNewSubtaskError] = useState<string | null>(null);
   const [optimisticItems, setOptimisticItems] = useState<TimelineItem[] | null>(null);
+  const [dragLayoutGeneration, setDragLayoutGeneration] = useState(0);
   const listRef = useRef<TimelineListHandle | null>(null);
   const newTaskInputRef = useRef<TextInput>(null);
   const activeKeyRef = useRef<string | null>(null);
@@ -80,6 +83,22 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
     removeTask(doc, id, { at: new Date().toISOString(), on: today });
   }, [doc, today]);
   const { requestDelete, cancelDelete, progress, isPending } = usePendingDelete(commitDelete);
+
+  const cancelCreating = useCallback(() => {
+    setCreating(false);
+    setNewTitle("");
+    setNewTaskError(null);
+    Keyboard.dismiss();
+  }, []);
+
+  useEffect(() => {
+    if (!creating) return undefined;
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      cancelCreating();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [cancelCreating, creating]);
 
   // The list data must stay referentially stable while a drag gesture is in
   // flight: swapping `data` mid-gesture makes DraggableFlatList silently cancel
@@ -115,6 +134,7 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
   const finishDrag = useCallback((data: TimelineItem[]) => {
     frozenItemsRef.current = null;
     setOptimisticItems(data);
+    setDragLayoutGeneration((generation) => generation + 1);
     activeKeyRef.current = null;
   }, []);
 
@@ -157,15 +177,22 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
   }, [doc, expandedCompletedSections, finishDrag, items, today]);
 
   const createTask = () => {
+    const validationError = newTaskValidationError(newTitle);
+    if (validationError !== null) {
+      setNewTaskError(validationError);
+      return;
+    }
     const input = buildNewTask(newTitle, newTaskBucket, { id: randomUUID(), now: new Date().toISOString() });
     if (input === null) return;
     addTaskToIncompleteHead(doc, input);
     setNewTitle("");
+    setNewTaskError(null);
     setCreating(false);
   };
 
   const startCreating = (bucket: Bucket = { kind: "date", date: today }) => {
     setNewTaskBucket(bucket);
+    setNewTaskError(null);
     setCreating(true);
     requestAnimationFrame(() => {
       listRef.current?.scrollToOffset({ animated: true, offset: 0 });
@@ -191,11 +218,17 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
     setEditTitle(task.title);
     setEditNote(task.note ?? "");
     setEditValidationError(null);
+    setAddingSubtask(false);
+    setNewSubtaskTitle("");
+    setNewSubtaskError(null);
   };
 
   const cancelEditing = (): void => {
     setEditingTask(null);
     setEditValidationError(null);
+    setAddingSubtask(false);
+    setNewSubtaskTitle("");
+    setNewSubtaskError(null);
   };
 
   const saveTaskEdit = (): void => {
@@ -211,6 +244,34 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
     cancelEditing();
   };
 
+  const editingChildren = useMemo(() => {
+    if (editingTask === null || editingTask.parentId !== null) return [];
+    return snapshotPlan(doc).tasks.filter(({ parentId }) => parentId === editingTask.id);
+  }, [doc, editingTask, projected]);
+
+  const createSubtask = (): void => {
+    if (editingTask === null || editingTask.parentId !== null) return;
+    const parent = snapshotPlan(doc).tasks.find(({ id }) => id === editingTask.id);
+    if (parent === undefined) {
+      setNewSubtaskError("Родительское дело больше не существует");
+      return;
+    }
+    const validationError = newTaskValidationError(newSubtaskTitle);
+    if (validationError !== null) {
+      setNewSubtaskError(validationError);
+      return;
+    }
+    const input = buildNewSubtask(newSubtaskTitle, parent, {
+      id: randomUUID(),
+      now: new Date().toISOString(),
+    });
+    if (input === null) return;
+    addTaskToIncompleteHead(doc, input);
+    setNewSubtaskTitle("");
+    setNewSubtaskError(null);
+    setAddingSubtask(false);
+  };
+
   const renderTask = (task: TaskSnapshot, completed: boolean, drag?: () => void) => (
     <TaskRow
       key={task.id}
@@ -219,10 +280,9 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
       pendingDelete={isPending(task.id)}
       deleteProgress={progress(task.id)}
       onCancelDelete={() => cancelDelete(task.id)}
-      onDelete={() => requestDelete(task.id)}
       onOpen={() => startEditing(task)}
-      onToggle={() => setTaskCompleted(doc, task.id, { completed: task.completedAt === null, at: new Date().toISOString(), on: today })}
       {...(drag !== undefined ? { onLongPress: drag } : {})}
+      onToggle={() => setTaskCompleted(doc, task.id, { completed: task.completedAt === null, at: new Date().toISOString(), on: today })}
     />
   );
 
@@ -291,10 +351,11 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
                     index: destination.index,
                     now: new Date().toISOString(),
                   });
+                  setDragLayoutGeneration((generation) => generation + 1);
                 }}
                 renderItem={({ item: child, drag: dragChild, isActive: childActive }) => (
                   <View style={childActive ? styles.dragging : undefined}>
-                    {renderTask(child, child.effectiveCompleted, dragChild)}
+                    {renderTask(child, child.effectiveCompleted, child.effectiveCompleted ? undefined : dragChild)}
                   </View>
                 )}
                 scrollEnabled={false}
@@ -331,7 +392,10 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
             <TextInput
               accessibilityLabel="Название нового дела"
               autoFocus
-              onChangeText={setNewTitle}
+              onChangeText={(value) => {
+                setNewTitle(value);
+                setNewTaskError(null);
+              }}
               onSubmitEditing={createTask}
               ref={newTaskInputRef}
               returnKeyType="done"
@@ -346,7 +410,16 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
             >
               <Text style={styles.newTaskConfirmText}>ОК</Text>
             </Pressable>
+            <Pressable
+              accessibilityLabel="Отменить создание дела"
+              accessibilityRole="button"
+              onPress={cancelCreating}
+              style={styles.newTaskCancel}
+            >
+              <Text style={styles.newTaskCancelText}>Отмена</Text>
+            </Pressable>
           </View>
+          {newTaskError === null ? null : <Text accessibilityRole="alert" style={styles.error}>{newTaskError}</Text>}
         </View>
       ) : (
         <Pressable accessibilityRole="button" onPress={() => startCreating()}>
@@ -367,7 +440,7 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
         data={listItems}
         dragItemOverflow
         keyboardShouldPersistTaps="handled"
-        keyExtractor={(item) => item.key}
+        keyExtractor={(item) => `${String(dragLayoutGeneration)}:${item.key}`}
         ListHeaderComponent={header}
         onDragBegin={handleDragBegin}
         onDragEnd={handleDragEnd}
@@ -384,7 +457,9 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
       >
         <View style={styles.editModalBackdrop}>
           <View style={styles.editModalCard}>
+            <ScrollView keyboardShouldPersistTaps="handled">
             <Text style={styles.editModalTitle}>Редактировать дело</Text>
+            <Text style={styles.inputLabel}>Название</Text>
             <TextInput
               accessibilityLabel="Название дела"
               autoFocus
@@ -397,6 +472,7 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
               style={styles.input}
               value={editTitle}
             />
+            <Text style={styles.inputLabel}>Пояснение</Text>
             <TextInput
               accessibilityLabel="Пояснение дела"
               onChangeText={setEditNote}
@@ -406,6 +482,50 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
             />
             {editValidationError === null ? null : (
               <Text accessibilityRole="alert" style={styles.error}>{editValidationError}</Text>
+            )}
+            {editingTask === null || editingTask.parentId !== null ? null : (
+              <View style={styles.subtaskEditor}>
+                {editingChildren.length === 0 ? null : (
+                  <>
+                    <Text style={styles.inputLabel}>Подзадачи</Text>
+                    {editingChildren.map((child) => (
+                      <View key={child.id} style={styles.subtaskPreview}>
+                        <View style={[styles.checkbox, child.completedAt === null ? undefined : styles.checkboxDone]}>
+                          {child.completedAt === null ? null : <Text style={styles.check}>✓</Text>}
+                        </View>
+                        <Text style={[styles.subtaskPreviewText, child.completedAt === null ? undefined : styles.completed]}>{child.title}</Text>
+                      </View>
+                    ))}
+                  </>
+                )}
+                {editingTask.completedAt !== null ? null : addingSubtask ? (
+                  <>
+                    <View style={styles.subtaskInputRow}>
+                      <TextInput
+                        accessibilityLabel="Название новой подзадачи"
+                        autoFocus
+                        onChangeText={(value) => {
+                          setNewSubtaskTitle(value);
+                          setNewSubtaskError(null);
+                        }}
+                        onSubmitEditing={createSubtask}
+                        placeholder="Название подзадачи"
+                        returnKeyType="done"
+                        style={[styles.input, styles.subtaskInput]}
+                        value={newSubtaskTitle}
+                      />
+                      <Pressable accessibilityRole="button" onPress={createSubtask} style={styles.subtaskAddButton}>
+                        <Text style={styles.subtaskAddButtonText}>Добавить</Text>
+                      </Pressable>
+                    </View>
+                    {newSubtaskError === null ? null : <Text accessibilityRole="alert" style={styles.error}>{newSubtaskError}</Text>}
+                  </>
+                ) : (
+                  <Pressable accessibilityRole="button" onPress={() => setAddingSubtask(true)} style={styles.inlineAction}>
+                    <Text style={styles.inlineActionText}>+ Добавить подзадачу</Text>
+                  </Pressable>
+                )}
+              </View>
             )}
             <View style={styles.editModalActions}>
               <Pressable
@@ -424,6 +544,20 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
                 <Text style={styles.secondaryButtonText}>Отмена</Text>
               </Pressable>
             </View>
+            <Pressable
+              accessibilityLabel={`Удалить: ${editingTask?.title ?? "дело"}`}
+              accessibilityRole="button"
+              onPress={() => {
+                if (editingTask === null) return;
+                const id = editingTask.id;
+                cancelEditing();
+                requestDelete(id);
+              }}
+              style={styles.destructiveButton}
+            >
+              <Text style={styles.destructiveButtonText}>Удалить дело</Text>
+            </Pressable>
+            </ScrollView>
           </View>
         </View>
       </Modal>

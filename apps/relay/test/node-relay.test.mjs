@@ -89,3 +89,50 @@ test("migrates persisted Miniflare vaults without decrypting them", () => {
   assert.equal(migrated.prepare("SELECT ciphertext FROM updates").get().ciphertext, envelope.ciphertext);
   migrated.close();
 });
+
+test("bounds opt-in bootstrap and update pages by bytes while preserving legacy responses", async () => {
+  const largeVaultId = randomBytes(16).toString("base64url");
+  const headers = { authorization, "content-type": "application/json" };
+  assert.equal((await fetch(`${baseUrl}/v1/vaults`, { method: "POST", headers, body: JSON.stringify({ vaultId: largeVaultId, authVerifier }) })).status, 201);
+  const largeEnvelope = { ...envelope, vaultId: largeVaultId, ciphertext: randomBytes(600_000).toString("base64url") };
+  for (let index = 1; index <= 4; index += 1) {
+    const update = { ...largeEnvelope, updateId: `${String(index).repeat(8)}-1111-4111-8111-111111111111` };
+    assert.equal((await fetch(`${baseUrl}/v1/vaults/${largeVaultId}/updates`, { method: "POST", headers, body: JSON.stringify({ updates: [update] }) })).status, 200);
+  }
+  const snapshot = { ...largeEnvelope, kind: "snapshot" };
+  assert.equal((await fetch(`${baseUrl}/v1/vaults/${largeVaultId}/snapshot`, { method: "PUT", headers, body: JSON.stringify({ coversThrough: 1, envelope: snapshot }) })).status, 204);
+
+  const initial = await fetch(`${baseUrl}/v1/vaults/${largeVaultId}/bootstrap?paged=1`, { headers });
+  const initialText = await initial.text();
+  assert.ok(Buffer.byteLength(initialText) <= 1_500_000);
+  const bootstrap = JSON.parse(initialText);
+  assert.equal(bootstrap.snapshot.cursor, 1);
+  assert.deepEqual(bootstrap.updates, []);
+  assert.equal(bootstrap.nextCursor, 1);
+  assert.equal(bootstrap.hasMore, true);
+
+  let cursor = bootstrap.nextCursor;
+  const cursors = [];
+  for (;;) {
+    const pageText = await (await fetch(`${baseUrl}/v1/vaults/${largeVaultId}/updates?after=${String(cursor)}&paged=1`, { headers })).text();
+    assert.ok(Buffer.byteLength(pageText) <= 1_500_000);
+    const page = JSON.parse(pageText);
+    assert.ok(page.nextCursor > cursor);
+    cursors.push(...page.updates.map((update) => update.cursor));
+    cursor = page.nextCursor;
+    if (!page.hasMore) break;
+  }
+  assert.deepEqual(cursors, [2, 3, 4]);
+  const legacy = await (await fetch(`${baseUrl}/v1/vaults/${largeVaultId}/bootstrap`, { headers })).json();
+  assert.equal(legacy.updates.length, 3);
+  assert.equal(legacy.nextCursor, 4);
+  assert.equal(legacy.hasMore, undefined);
+  assert.equal((await fetch(`${baseUrl}/v1/vaults/${largeVaultId}/snapshot`, { method: "PUT", headers, body: JSON.stringify({ coversThrough: 3, envelope: snapshot }) })).status, 204);
+  const shortcutText = await (await fetch(`${baseUrl}/v1/vaults/${largeVaultId}/updates?after=0&paged=1&resume=1`, { headers })).text();
+  assert.ok(Buffer.byteLength(shortcutText) < 500);
+  assert.deepEqual(JSON.parse(shortcutText), { updates: [], nextCursor: 0, hasMore: false, anchorUpdateId: null, bootstrapRequired: true });
+  const continuation = await (await fetch(`${baseUrl}/v1/vaults/${largeVaultId}/updates?after=1&paged=1&resume=0`, { headers })).json();
+  assert.equal(continuation.anchorUpdateId, largeEnvelope.updateId);
+  assert.equal(continuation.updates.length, 1);
+  assert.equal(continuation.bootstrapRequired, undefined);
+});

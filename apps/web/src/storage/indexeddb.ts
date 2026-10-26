@@ -147,6 +147,9 @@ export class IndexedDbPlanStore implements PlanStore {
   #databasePromise: Promise<IDBDatabase> | null = null;
   #draftDatabasePromise: Promise<IDBDatabase> | null = null;
   #pendingSnapshot: Uint8Array | null = null;
+  #acknowledgedSnapshot: Uint8Array | null = null;
+  #acknowledgedPending: { structs: Uint8Array | null; deletions: Uint8Array | null } | null = null;
+  #snapshotPending: { structs: Uint8Array | null; deletions: Uint8Array | null } | null = null;
   #writeLoopPromise: Promise<void> | null = null;
   #activeTransaction: IDBTransaction | null = null;
   #writeBlocked = false;
@@ -159,6 +162,7 @@ export class IndexedDbPlanStore implements PlanStore {
       return;
     }
     this.#pendingSnapshot = Y.encodeStateAsUpdate(this.#doc);
+    this.#snapshotPending = this.#pendingState(this.#doc);
     if (this.#writeBlocked) {
       return;
     }
@@ -195,6 +199,7 @@ export class IndexedDbPlanStore implements PlanStore {
     const doc = await (this.#loadPromise ?? this.load());
     this.#ensureActive();
     this.#pendingSnapshot = Y.encodeStateAsUpdate(doc);
+    this.#snapshotPending = this.#pendingState(doc);
     this.#writeBlocked = false;
     this.#setState({ error: null, status: "saving" });
     this.#startWriteLoop();
@@ -202,6 +207,40 @@ export class IndexedDbPlanStore implements PlanStore {
     if (this.#state.status === "error") {
       throw this.#state.error;
     }
+  }
+
+  async flush(): Promise<void> {
+    this.#ensureActive();
+    for (;;) {
+      const doc = this.#doc;
+      if (doc !== null && this.#pendingSnapshot === null && this.#writeLoopPromise === null) {
+        const pending = this.#pendingState(doc);
+        if ((pending.structs !== null || pending.deletions !== null) && (pending.structs !== this.#acknowledgedPending?.structs || pending.deletions !== this.#acknowledgedPending.deletions)) this.#recordUpdate();
+      }
+      if (this.#pendingSnapshot !== null && this.#writeLoopPromise === null) {
+        this.#startWriteLoop();
+      }
+      const loop = this.#writeLoopPromise;
+      if (loop !== null) {
+        await loop;
+        continue;
+      }
+      if (this.#state.status === "error") {
+        throw this.#state.error;
+      }
+      return;
+    }
+  }
+
+  #pendingState(doc: Y.Doc): { structs: Uint8Array | null; deletions: Uint8Array | null } {
+    return { structs: doc.store.pendingStructs?.update ?? null, deletions: doc.store.pendingDs };
+  }
+
+  async checkpointBytes(doc: Y.Doc): Promise<Uint8Array | null> {
+    await this.flush();
+    if (this.#doc !== doc) return null;
+    this.#acknowledgedSnapshot ??= new Uint8Array();
+    return this.#acknowledgedSnapshot;
   }
 
   async loadDraft(): Promise<string | null> {
@@ -291,6 +330,7 @@ export class IndexedDbPlanStore implements PlanStore {
         throw new Error("Plan store was destroyed before it loaded");
       }
       this.#doc = doc;
+      this.#acknowledgedPending = this.#pendingState(doc);
       doc.on("update", this.#recordUpdate);
       this.#setState({ error: null, status: "saved" });
       return doc;
@@ -312,6 +352,7 @@ export class IndexedDbPlanStore implements PlanStore {
     await snapshotCompleted;
     const acknowledged = asYjsUpdate(storedSnapshot);
     if (acknowledged !== null) {
+      this.#acknowledgedSnapshot = acknowledged;
       Y.applyUpdate(doc, acknowledged);
       return;
     }
@@ -336,6 +377,9 @@ export class IndexedDbPlanStore implements PlanStore {
         }
       }
     });
+    const migrated = Y.encodeStateAsUpdate(doc);
+    await this.#commitSnapshot(migrated);
+    this.#acknowledgedSnapshot = migrated;
   }
 
   #startWriteLoop(): void {
@@ -358,14 +402,17 @@ export class IndexedDbPlanStore implements PlanStore {
       !this.#writeBlocked
     ) {
       const snapshot = this.#pendingSnapshot;
+      const pending = this.#snapshotPending;
       this.#pendingSnapshot = null;
       try {
         await this.#commitSnapshot(snapshot);
+        this.#acknowledgedSnapshot = snapshot;
+        this.#acknowledgedPending = pending;
       } catch (reason: unknown) {
         if (this.#isDestroyed()) {
           return;
         }
-        this.#pendingSnapshot ??= snapshot;
+        if (!this.#hasPendingSnapshot()) { this.#pendingSnapshot = snapshot; this.#snapshotPending = pending; }
         this.#writeBlocked = true;
         this.#setState({
           error: asError(reason, "Could not save plan"),

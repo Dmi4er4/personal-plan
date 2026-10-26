@@ -12,5 +12,7 @@ export interface PlanStore {
   getPersistenceState(): PersistenceState;
   subscribePersistence(listener: (state: PersistenceState) => void): () => void;
   retryPersistence(): Promise<void>;
+  flush?(): Promise<void>;
+  checkpointBytes?(doc: Y.Doc): Promise<Uint8Array | null>;
   destroy(): Promise<void>;
 }

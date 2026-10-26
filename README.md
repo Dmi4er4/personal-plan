@@ -12,6 +12,7 @@ The interface is currently in Russian.
 - Android client backed by SQLite and SecureStore;
 - Android home-screen widget with durable offline actions;
 - timeline and lossless plain-text views of the same Yjs document;
+- planning days start at 04:00 in the device's local time;
 - end-to-end encrypted device sync using AES-256-GCM and a 24-word BIP-39
   recovery phrase;
 - self-hostable Node/Docker relay and a Cloudflare Workers implementation;

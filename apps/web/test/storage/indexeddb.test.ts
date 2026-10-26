@@ -39,6 +39,31 @@ afterEach(async () => {
 });
 
 describe("IndexedDbPlanStore", () => {
+  it.each(["structs", "deletions"])("flushes pending %s that emit no Yjs update event", async (kind) => {
+    const source = new Y.Doc();
+    const updates: Uint8Array[] = [];
+    source.on("update", (update: Uint8Array) => updates.push(update));
+    source.getMap("tasks").set("dependency", "first");
+    if (kind === "structs") source.getMap("tasks").set("pending", "keep this operation");
+    else source.getMap("tasks").delete("dependency");
+    const initial = updates.at(0); const later = updates.at(1);
+    if (initial === undefined || later === undefined) throw new Error("fixture_update_missing");
+    const first = new IndexedDbPlanStore("test-plan");
+    const doc = await first.load();
+    Y.applyUpdate(doc, later);
+    await first.flush();
+    const bytes = await first.checkpointBytes(doc);
+    await first.destroy();
+    const reopened = new IndexedDbPlanStore("test-plan");
+    const loaded = await reopened.load();
+
+    expect(await reopened.checkpointBytes(loaded)).toEqual(bytes);
+    Y.applyUpdate(loaded, initial);
+    if (kind === "structs") expect(loaded.getMap("tasks").get("pending")).toBe("keep this operation");
+    else expect(loaded.getMap("tasks").has("dependency")).toBe(false);
+    await reopened.destroy();
+  });
+
   it("restores plan data after the store is destroyed and reopened", async () => {
     const firstStore = new IndexedDbPlanStore("test-plan");
     const firstDoc = await firstStore.load();
@@ -61,6 +86,29 @@ describe("IndexedDbPlanStore", () => {
       { id: "persistent-task", title: "Пережить перезапуск" },
     ]);
     await secondStore.destroy();
+  });
+
+  it("flushes the current plan before a sync cursor can be committed", async () => {
+    const store = new IndexedDbPlanStore("test-plan");
+    const doc = await store.load();
+    addTask(doc, {
+      id: "remote-before-cursor",
+      title: "Сначала сохранить план",
+      note: null,
+      bucket: { kind: "later" },
+      parentId: null,
+      order: 0,
+      now: "2026-08-03T08:00:00.000Z",
+    });
+
+    await store.flush();
+
+    const reloaded = new IndexedDbPlanStore("test-plan");
+    expect(snapshotPlan(await reloaded.load()).tasks).toMatchObject([
+      { id: "remote-before-cursor", title: "Сначала сохранить план" },
+    ]);
+    await reloaded.destroy();
+    await store.destroy();
   });
 
   it("persists a draft independently from plan data", async () => {

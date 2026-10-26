@@ -1,4 +1,4 @@
-import { base64UrlDecode, base64UrlEncode, type OutboxEntry, type SyncStateStore } from "@personal-plan/sync";
+import { base64UrlDecode, base64UrlEncode, type OutboxEntry, type ResumeCheckpoint, type SyncStateStore } from "@personal-plan/sync";
 
 const DATABASE_NAME = "personal-plan-sync-v1";
 const META = "meta";
@@ -6,7 +6,7 @@ const OUTBOX = "outbox";
 const SECRETS = "secrets";
 const ACTIVE_SECRET = "active";
 
-interface MetaRecord { vaultId: string; cursor: number; acknowledgedSinceSnapshot: number }
+interface MetaRecord { vaultId: string; cursor: number; acknowledgedSinceSnapshot: number; resumeCheckpoint?: ResumeCheckpoint }
 interface OutboxRecord extends OutboxEntry { updateId: string; vaultId: string }
 interface SecretRecord { id: "active"; rootSecret: string; relayUrl: string; recoveryAcknowledged?: boolean }
 export interface StoredSyncSecret { rootSecret: Uint8Array; relayUrl: string }
@@ -83,7 +83,7 @@ export class IndexedDbSyncStateStore implements SyncStateStore {
     const done = completed(transaction);
     const store = transaction.objectStore(META);
     const record = await result(get<MetaRecord>(store, vaultId));
-    await result(store.put({ vaultId, cursor, acknowledgedSinceSnapshot: record?.acknowledgedSinceSnapshot ?? 0 } satisfies MetaRecord));
+    await result(store.put({ ...record, vaultId, cursor, acknowledgedSinceSnapshot: record?.acknowledgedSinceSnapshot ?? 0 } satisfies MetaRecord));
     await done;
   }
 
@@ -122,7 +122,7 @@ export class IndexedDbSyncStateStore implements SyncStateStore {
     const meta = transaction.objectStore(META);
     for (const [vaultId, count] of counts) {
       const record = await result(get<MetaRecord>(meta, vaultId));
-      await result(meta.put({ vaultId, cursor: record?.cursor ?? 0, acknowledgedSinceSnapshot: (record?.acknowledgedSinceSnapshot ?? 0) + count } satisfies MetaRecord));
+      await result(meta.put({ ...record, vaultId, cursor: record?.cursor ?? 0, acknowledgedSinceSnapshot: (record?.acknowledgedSinceSnapshot ?? 0) + count } satisfies MetaRecord));
     }
     await done;
     return [...counts.values()].reduce((sum, count) => sum + count, 0);
@@ -143,7 +143,26 @@ export class IndexedDbSyncStateStore implements SyncStateStore {
     const done = completed(transaction);
     const store = transaction.objectStore(META);
     const record = await result(get<MetaRecord>(store, vaultId));
-    await result(store.put({ vaultId, cursor: record?.cursor ?? 0, acknowledgedSinceSnapshot: 0 } satisfies MetaRecord));
+    await result(store.put({ ...record, vaultId, cursor: record?.cursor ?? 0, acknowledgedSinceSnapshot: 0 } satisfies MetaRecord));
+    await done;
+  }
+
+  async getResumeCheckpoint(vaultId: string): Promise<ResumeCheckpoint | null> {
+    const database = await this.#database();
+    const transaction = database.transaction(META, "readonly");
+    const done = completed(transaction);
+    const record = await result(get<MetaRecord>(transaction.objectStore(META), vaultId));
+    await done;
+    return record?.resumeCheckpoint ?? null;
+  }
+
+  async setResumeCheckpoint(vaultId: string, checkpoint: ResumeCheckpoint): Promise<void> {
+    const database = await this.#database();
+    const transaction = database.transaction(META, "readwrite");
+    const done = completed(transaction);
+    const store = transaction.objectStore(META);
+    const record = await result(get<MetaRecord>(store, vaultId));
+    await result(store.put({ ...record, vaultId, cursor: record?.cursor ?? 0, acknowledgedSinceSnapshot: record?.acknowledgedSinceSnapshot ?? 0, resumeCheckpoint: checkpoint } satisfies MetaRecord));
     await done;
   }
 

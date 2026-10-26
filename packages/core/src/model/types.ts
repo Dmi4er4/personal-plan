@@ -54,6 +54,14 @@ export interface CompletionCommand {
   completedOn: LocalDate;
 }
 
+export interface CreateTaskCommand {
+  id: string;
+  taskId: string;
+  title: string;
+  createdAt: string;
+  createdOn: LocalDate;
+}
+
 export interface RemovalMeta {
   at: string;
   on: LocalDate;

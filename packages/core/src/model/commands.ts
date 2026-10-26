@@ -10,6 +10,7 @@ import {
   bucketKey,
   type Bucket,
   type CompletionCommand,
+  type CreateTaskCommand,
   type LocalDate,
   type CompletionChange,
   type EditTaskPatch,
@@ -64,6 +65,42 @@ export function applyWidgetCompletionCommand(
   return result;
 }
 
+export function applyWidgetCreateTaskCommand(
+  doc: Y.Doc,
+  command: CreateTaskCommand,
+): "applied" | "duplicate" {
+  let result: "applied" | "duplicate" = "applied";
+  doc.transact(() => {
+    const applied = doc.getMap<string>(APPLIED_WIDGET_COMMANDS);
+    if (applied.has(command.id)) {
+      result = "duplicate";
+      return;
+    }
+
+    const tasks = doc.getMap<Y.Map<unknown>>("tasks");
+    if (tasks.has(command.taskId)) {
+      // A crash can happen after the task update is persisted but before the
+      // command file is acknowledged. Mark that command as consumed without
+      // creating a second visible task.
+      applied.set(command.id, command.createdAt);
+      result = "duplicate";
+      return;
+    }
+
+    addTaskToIncompleteHead(doc, {
+      id: command.taskId,
+      title: command.title,
+      note: null,
+      bucket: { kind: "date", date: command.createdOn },
+      parentId: null,
+      order: 0,
+      now: command.createdAt,
+    });
+    applied.set(command.id, command.createdAt);
+  }, "widget-command");
+  return result;
+}
+
 export function pruneAppliedWidgetCommands(doc: Y.Doc, today: LocalDate): number {
   const threshold = new Date(`${today}T12:00:00.000Z`);
   threshold.setUTCDate(threshold.getUTCDate() - 30);
@@ -81,6 +118,7 @@ export function pruneAppliedWidgetCommands(doc: Y.Doc, today: LocalDate): number
 }
 
 function replaceText(value: Y.Text, next: string): void {
+  if (value.toJSON() === next) return;
   value.delete(0, value.length);
   value.insert(0, next);
 }
@@ -132,7 +170,7 @@ function insertAt(
 
 function writeOrders(maps: readonly Y.Map<unknown>[]): void {
   maps.forEach((map, order) => {
-    map.set("order", order);
+    if (map.get("order") !== order) map.set("order", order);
   });
 }
 
