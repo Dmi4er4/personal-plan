@@ -9,7 +9,7 @@ export const styles = StyleSheet.create({
   section: { flexDirection: "row", marginBottom: 0 },
   blockRow: { flexDirection: "row", marginBottom: 0 },
   timelineList: { flexGrow: 0 },
-  farSection: { marginTop: 18, borderTopWidth: 1, borderTopColor: "#d5d6de", paddingTop: 14 },
+  farSection: { marginTop: 18, borderTopWidth: 2, borderTopColor: "#b8bac7", paddingTop: 14 },
   farSectionFollow: { marginTop: 14 },
   sectionLabel: { width: 72, paddingRight: 8 },
   sectionLabelPressed: { opacity: 0.55 },
