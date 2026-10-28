@@ -302,7 +302,11 @@ export function TimelineScreen({ doc, projected, today }: { doc: Y.Doc; projecte
             <Text style={styles.primary}>{primary}</Text>
             {secondary ? <Text style={styles.secondary}>{secondary}</Text> : null}
           </Pressable>
-          <View style={[styles.tasks, styles.tasksContainer, item.empty ? styles.sectionHeaderLineEmpty : styles.sectionHeaderLine]} />
+          <View style={[styles.tasks, styles.tasksContainer, item.empty ? styles.sectionHeaderLineEmpty : styles.sectionHeaderLine]}>
+            {item.bucket.kind === "date" && item.key !== items[0]?.key ? (
+              <View pointerEvents="none" style={styles.dayDivider} />
+            ) : null}
+          </View>
         </View>
       );
     }

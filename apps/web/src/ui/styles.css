@@ -350,6 +350,14 @@ textarea {
   padding-left: 0.625rem;
 }
 
+.timeline-section--default + .timeline-section--default > .timeline-tasks::before {
+  background: #e3e4ec;
+  content: "";
+  display: block;
+  height: 1px;
+  margin: 0.375rem 0 0.375rem -0.625rem;
+}
+
 .task-block {
   display: grid;
   gap: 0;

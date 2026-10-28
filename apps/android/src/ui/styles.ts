@@ -24,6 +24,7 @@ export const styles = StyleSheet.create({
   secondary: { fontSize: 11, color: "#858692", marginTop: 2 },
   tasksContainer: { flex: 1 },
   tasks: { borderLeftWidth: 2, borderLeftColor: "#d9dcff", paddingLeft: 10 },
+  dayDivider: { height: 1, backgroundColor: "#e3e4ec", marginLeft: -10, marginVertical: 6 },
   taskBlock: { width: "100%", marginBottom: 6 },
   completedCut: { flex: 1, borderTopWidth: 1, borderTopColor: "#e0e1e7", paddingVertical: 10 },
   completedCutPressed: { opacity: 0.55 },
