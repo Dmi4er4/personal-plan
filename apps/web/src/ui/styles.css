@@ -299,7 +299,8 @@ textarea {
   border-radius: 0.5rem;
 }
 
-.timeline-section--far {
+.timeline-section--far,
+.timeline-section--far-follow {
   border-top: 2px solid #b8bac7;
   margin-top: 1.125rem;
   padding-top: 0.875rem;
